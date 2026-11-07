@@ -17,6 +17,7 @@ const P = {
   key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M18 5l2 2"/>',
   alert: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
   chevron: '<path d="m9 18 6-6-6-6"/>',
+  cloud: '<path d="M17.5 19a4.5 4.5 0 1 0-1.3-8.8A6.5 6.5 0 0 0 4 12.5 3.5 3.5 0 0 0 6.5 19z"/>',
 };
 
 export function icon(name, size = 20) {

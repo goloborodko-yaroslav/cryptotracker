@@ -95,12 +95,14 @@ async function wrapWithPassword(vault, dekRaw, password) {
   const salt = rand(16);
   vault.kdf = { alg: 'argon2id', salt: b64.to(salt), ...KDF_PARAMS };
   vault.wrapPw = await seal(await passwordKek(vault, password), dekRaw, AAD.pw);
+  vault.pwAt = Date.now(); // для синхронізації: новіша зміна пароля перемагає
 }
 
 async function wrapWithRecovery(vault, dekRaw) {
   const rk = genRecovery();
   const salt = rand(16);
   vault.wrapRk = { salt: b64.to(salt), ...(await seal(await recoveryKek(rk, salt), dekRaw, AAD.rk)) };
+  vault.rkAt = Date.now();
   return formatRecovery(rk);
 }
 

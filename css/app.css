@@ -382,3 +382,21 @@ a.legend-row:hover { background: var(--surface-2); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ---------- Синхронізація ---------- */
+.status-line { display: inline-flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.mono { font: 600 13.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow-wrap: anywhere; text-align: right; }
+.howto { margin: -4px 0 16px; font-size: 13.5px; color: var(--muted); }
+.howto summary { cursor: pointer; color: var(--text); font-weight: 600; padding: 6px 0; list-style: none; }
+.howto summary::-webkit-details-marker { display: none; }
+.howto summary::before { content: "+ "; color: var(--muted); }
+.howto[open] summary::before { content: "− "; }
+.howto ol { margin: 8px 0 10px; padding-left: 20px; line-height: 1.65; }
+.howto a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.howto code { font: 12.5px ui-monospace, "SF Mono", Menlo, monospace; background: rgba(255, 255, 255, .08); padding: 1px 5px; border-radius: 5px; }
+.auth-card .link-btn .ico, .link-btn .ico { display: inline-block; vertical-align: -3px; margin-right: 4px; }
+.set-group .warn-box { margin: 4px 0 12px; }
+[hidden] { display: none !important; }
+.warn-box > div { min-width: 0; }
+.warn-box .btn { white-space: normal; height: auto; min-height: 34px; padding: 8px 12px; text-align: left; color: var(--text); }
+.modal { overflow-x: hidden; }

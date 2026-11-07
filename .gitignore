@@ -1,3 +1,4 @@
 .DS_Store
 *.json.bak
 cryptotracker-backup-*.json
+js/dev-mock-github.js

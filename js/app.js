@@ -2,11 +2,12 @@ import * as db from './store.js';
 import * as V from './crypto.js';
 import { computePortfolio, computeCoin, sortTxs, TX_TYPES } from './calc.js';
 import * as P from './prices.js';
+import * as Sync from './sync.js';
 import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from './format.js';
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -15,6 +16,7 @@ const modalRoot = $('#modal-root');
 const S = {
   vault: null, dek: null, state: null, market: null,
   priceError: null, refreshing: false, lastActive: Date.now(), started: false,
+  pendingSync: null,
 };
 
 const newState = () => ({
@@ -35,15 +37,113 @@ function toast(msg, kind = 'ok') {
 }
 
 let saveChain = Promise.resolve();
-function save() {
+function save({ sync = true } = {}) {
   saveChain = saveChain
     .then(async () => {
       await V.sealData(S.vault, S.dek, S.state);
       await db.set('vault', S.vault);
     })
     .catch((e) => { console.error(e); toast('Не вдалося зберегти дані', 'err'); });
+  if (sync) saveChain.then(() => scheduleSync());
   return saveChain;
 }
+
+// ---------------- Синхронізація ----------------
+
+const SYNC = { busy: false, at: null, err: null, timer: null, again: false };
+const DEFAULT_REPO = location.hostname.endsWith('.github.io') ? `${location.hostname.split('.')[0]}/cryptotracker-data` : '';
+const SYNC_ERRORS = {
+  BAD_TOKEN: 'Токен недійсний або прострочений',
+  NO_ACCESS: 'Репозиторій не знайдено або токен не має до нього доступу',
+  FORBIDDEN: 'Токен не має права запису (потрібно Contents: Read and write)',
+  PUBLIC_REPO: 'Репозиторій публічний — потрібен приватний',
+  DIFFERENT_KEY: 'На GitHub лежить інший портфель, зашифрований іншим ключем',
+  BAD_REMOTE: 'Файл на GitHub пошкоджений',
+  BAD_REPO: 'Невірна назва репозиторію (має бути: користувач/назва)',
+  NETWORK: 'Немає з’єднання з GitHub',
+};
+const syncErrText = (code) => SYNC_ERRORS[code] || 'Помилка синхронізації (' + code + ')';
+const syncCfg = () => (S.state?.sync?.token && S.state.sync.repo ? S.state.sync : null);
+
+function scheduleSync(delay = 1500) {
+  if (!syncCfg()) return;
+  clearTimeout(SYNC.timer);
+  SYNC.timer = setTimeout(() => syncNow(), delay);
+}
+
+async function syncNow({ overwrite = false, manual = false } = {}) {
+  const cfg = syncCfg();
+  if (!cfg || !S.dek) return;
+  if (SYNC.busy) { SYNC.again = true; return; }
+  SYNC.busy = true;
+  updateSyncUI();
+  try {
+    for (let attempt = 0; ; attempt++) {
+      await saveChain;
+      const remote = await Sync.pull(cfg);
+      let needPush = true;
+      if (remote && !overwrite) {
+        if (!V.isVault(remote.vault)) throw Object.assign(new Error('BAD_REMOTE'), { code: 'BAD_REMOTE' });
+        let rstate;
+        try { rstate = await V.openData(remote.vault, S.dek); }
+        catch { throw Object.assign(new Error('DIFFERENT_KEY'), { code: 'DIFFERENT_KEY' }); }
+        const keysChanged = Sync.adoptNewerKeys(S.vault, remote.vault);
+        const merged = Sync.mergeStates(S.state, rstate);
+        const localChanged = !Sync.sameContent(merged, S.state);
+        S.state = merged;
+        needPush = !Sync.sameContent(merged, rstate) || Sync.localKeysNewer(S.vault, remote.vault);
+        if (localChanged || keysChanged) await save({ sync: false });
+        if (localChanged) renderView();
+        if (keysChanged) toast('Пароль або ключ відновлення змінено на іншому пристрої');
+      }
+      if (!needPush) break;
+      await saveChain;
+      try { await Sync.push(cfg, S.vault, remote?.sha); break; }
+      catch (e) { if (e.code === 'CONFLICT' && attempt < 3) continue; throw e; }
+    }
+    SYNC.at = Date.now();
+    SYNC.err = null;
+    if (manual) toast('Синхронізовано');
+  } catch (e) {
+    console.warn('sync', e);
+    SYNC.err = e.code || e.message;
+    if (manual) toast(syncErrText(SYNC.err), 'err');
+  } finally {
+    SYNC.busy = false;
+    updateSyncUI();
+    if (SYNC.again) { SYNC.again = false; scheduleSync(300); }
+  }
+}
+
+function syncStatusHtml() {
+  if (!syncCfg()) return '';
+  if (SYNC.busy) return `<span class="spinner sm"></span> Синхронізація…`;
+  if (SYNC.err) return `${icon('alert', 14)} ${esc(syncErrText(SYNC.err))}`;
+  if (SYNC.at) return `${icon('cloud', 14)} Синхронізовано · ${time(SYNC.at)}`;
+  return `${icon('cloud', 14)} Синхронізація увімкнена`;
+}
+
+function updateSyncUI() {
+  for (const el of $$('.sync-status')) {
+    el.innerHTML = syncStatusHtml();
+    el.classList.toggle('warn', !!SYNC.err && !SYNC.busy);
+  }
+  const box = $('#sync-diff');
+  if (box) box.hidden = SYNC.err !== 'DIFFERENT_KEY';
+}
+
+const TOKEN_HELP = `
+  <details class="howto">
+    <summary>Як створити токен (2 хвилини)</summary>
+    <ol>
+      <li>Відкрийте <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">github.com → Fine-grained token</a>.</li>
+      <li><b>Token name:</b> CryptoTracker. <b>Expiration:</b> 1 рік (або довше).</li>
+      <li><b>Repository access:</b> Only select repositories → <b>cryptotracker-data</b>.</li>
+      <li><b>Permissions → Repository permissions → Contents:</b> Read and write.</li>
+      <li>Натисніть <b>Generate token</b> і скопіюйте його (починається з <code>github_pat_</code>).</li>
+    </ol>
+    <p>Токен дає доступ лише до цього одного репозиторію. Він зберігається всередині зашифрованих даних.</p>
+  </details>`;
 
 function waitArgon() {
   if (globalThis.hashwasm?.argon2id) return Promise.resolve();
@@ -187,9 +287,11 @@ function renderSetup() {
       <label class="field"><span>Повторіть пароль</span><input type="password" name="pw2" autocomplete="new-password" required></label>
       <div class="form-err" hidden></div>
       <button class="btn primary block lg" type="submit">Створити сховище</button>
-    </form>`);
+    </form>
+    <button class="link-btn" id="have-remote">${icon('cloud', 16)} Уже маю портфель на іншому пристрої</button>`);
   const form = $('#setup-form');
   bindStrength(form);
+  $('#have-remote').addEventListener('click', renderConnectExisting);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const pw = form.elements.pw.value, pw2 = form.elements.pw2.value;
@@ -209,6 +311,49 @@ function renderSetup() {
       console.error(e2);
       busy(btn, false);
       showErr(form, 'Не вдалося створити сховище: ' + e2.message);
+    }
+  });
+}
+
+function renderConnectExisting() {
+  app.innerHTML = authShell(`
+    <h1>Підключити портфель</h1>
+    <p class="muted">Завантажимо зашифрований портфель із вашого приватного репозиторію GitHub. Потім введете той самий головний пароль, що й на іншому пристрої.</p>
+    <form id="connect-form" novalidate autocomplete="off">
+      <label class="field"><span>Репозиторій</span><input name="repo" value="${esc(DEFAULT_REPO)}" placeholder="користувач/cryptotracker-data" spellcheck="false" autocapitalize="off"></label>
+      <label class="field"><span>Токен доступу</span><input type="password" name="token" placeholder="github_pat_…" spellcheck="false" autocapitalize="off" autocomplete="off"></label>
+      ${TOKEN_HELP}
+      <div class="form-err" hidden></div>
+      <button class="btn primary block lg" type="submit">${icon('cloud', 18)} Завантажити портфель</button>
+    </form>
+    <button class="link-btn" id="back-setup">← Створити новий портфель</button>`);
+  const form = $('#connect-form');
+  $('#back-setup').addEventListener('click', renderSetup);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const repo = Sync.parseRepo(form.elements.repo.value);
+    const token = form.elements.token.value.trim();
+    if (!repo) return showErr(form, syncErrText('BAD_REPO'));
+    if (!token) return showErr(form, 'Вставте токен доступу');
+    const cfg = { repo: repo.full, token };
+    const btn = $('button[type=submit]', form);
+    busy(btn, true, 'Завантажуємо…');
+    try {
+      await Sync.checkRepo(cfg);
+      const remote = await Sync.pull(cfg);
+      if (!remote) throw Object.assign(new Error('EMPTY'), { code: 'EMPTY' });
+      if (!V.isVault(remote.vault)) throw Object.assign(new Error('BAD_REMOTE'), { code: 'BAD_REMOTE' });
+      await db.set('vault', remote.vault);
+      db.persist();
+      S.vault = remote.vault;
+      S.pendingSync = cfg;
+      renderUnlock();
+      toast('Портфель завантажено. Введіть головний пароль');
+    } catch (e2) {
+      busy(btn, false);
+      showErr(form, e2.code === 'EMPTY'
+        ? 'У репозиторії ще немає портфеля. Спочатку увімкніть синхронізацію на пристрої, де портфель уже є.'
+        : syncErrText(e2.code || e2.message));
     }
   });
 }
@@ -310,10 +455,17 @@ function enterApp() {
   S.state.settings ??= { autoLockMin: 5, hideValues: false };
   S.state.prices ??= {};
   S.state.coins ??= {};
+  S.state.deleted ??= {};
+  if (S.pendingSync) {
+    S.state.sync = { ...S.pendingSync, since: Date.now() };
+    S.pendingSync = null;
+    save({ sync: false });
+  }
   S.lastActive = Date.now();
   renderShell();
   route();
   refreshPrices();
+  syncNow();
   if (S.started) return;
   S.started = true;
   addEventListener('hashchange', route);
@@ -321,9 +473,10 @@ function enterApp() {
     addEventListener(ev, () => (S.lastActive = Date.now()), { passive: true }));
   setInterval(checkAutoLock, 10_000);
   setInterval(() => { if (document.visibilityState === 'visible') refreshPrices(); }, 120_000);
+  setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 60_000);
   document.addEventListener('visibilitychange', () => {
     document.body.classList.toggle('obscured', document.visibilityState === 'hidden');
-    if (document.visibilityState === 'visible') { checkAutoLock(); if (S.dek) refreshPrices(); }
+    if (document.visibilityState === 'visible') { checkAutoLock(); if (S.dek) { refreshPrices(); syncNow(); } }
   });
 }
 
@@ -364,9 +517,12 @@ function renderView() {
 }
 
 function pricesLine() {
-  if (S.priceError) return `<span class="status warn">${icon('alert', 14)} ${esc(S.priceError)}</span>`;
-  if (S.market) return `<span class="status"><i class="dot"></i> Ціни CoinGecko · ${time(S.market.ts)}</span>`;
-  return `<span class="status"><span class="spinner sm"></span> Завантажуємо ціни…</span>`;
+  const sync = syncCfg() ? `<span class="status sync-status ${SYNC.err && !SYNC.busy ? 'warn' : ''}">${syncStatusHtml()}</span>` : '';
+  let price;
+  if (S.priceError) price = `<span class="status warn">${icon('alert', 14)} ${esc(S.priceError)}</span>`;
+  else if (S.market) price = `<span class="status"><i class="dot"></i> Ціни CoinGecko · ${time(S.market.ts)}</span>`;
+  else price = `<span class="status"><span class="spinner sm"></span> Завантажуємо ціни…</span>`;
+  return `<span class="status-line">${price}${sync}</span>`;
 }
 
 function pnlChip(v, p) {
@@ -731,6 +887,7 @@ function openTxModal({ coinId = null, txId = null } = {}) {
       coinId: F.coinId, type: F.type, qty: q, price: p, fee: f, date,
       note: form.elements.note.value.trim().slice(0, 140),
       created: tx?.created || Date.now(),
+      updated: Date.now(),
     };
     if (tx) S.state.txs[S.state.txs.findIndex((t) => t.id === tx.id)] = rec;
     else S.state.txs.push(rec);
@@ -750,6 +907,7 @@ function deleteTx(id) {
   const c = meta(t.coinId);
   if (!confirm(`Видалити транзакцію «${TX_TYPES[t.type]} ${fq(t.qty)} ${c.symbol}» від ${dt(t.date)}?`)) return;
   S.state.txs = S.state.txs.filter((x) => x.id !== id);
+  (S.state.deleted ??= {})[id] = Date.now();
   save();
   toast('Транзакцію видалено');
   renderView();
@@ -771,6 +929,7 @@ function openSettings() {
       <button class="set-row btn-row" data-act="change-pw"><span>Змінити головний пароль</span>${icon('chevron', 18)}</button>
       <button class="set-row btn-row" data-act="new-rk"><span>Створити новий ключ відновлення</span>${icon('chevron', 18)}</button>
     </div>
+    <div class="set-group" id="sync-group">${syncGroupHtml()}</div>
     <div class="set-group">
       <h3>${icon('download', 16)} Резервна копія</h3>
       <p class="muted small">Файл зашифрований тим самим паролем. Зберігайте копії в кількох місцях — у хмарі, на флешці. Без пароля або ключа відновлення файл марний.</p>
@@ -796,6 +955,74 @@ function openSettings() {
     toast('Збережено');
   });
   $('#import-file').addEventListener('change', (e) => importBackup(e.target.files[0]));
+  bindSyncGroup();
+}
+
+function syncGroupHtml() {
+  const cfg = syncCfg();
+  const head = `<h3>${icon('cloud', 16)} Синхронізація</h3>`;
+  if (cfg) {
+    return `${head}
+      <div class="set-row"><span>Репозиторій</span><b class="mono">${esc(cfg.repo)}</b></div>
+      <div class="set-row"><span>Стан</span><span class="status sync-status">${syncStatusHtml()}</span></div>
+      <div class="warn-box" id="sync-diff" ${SYNC.err === 'DIFFERENT_KEY' ? '' : 'hidden'}>${icon('alert', 18)}
+        <div>На GitHub лежить портфель, зашифрований іншим ключем (наприклад, після відновлення з файлу або створення нового сховища).
+        <button class="btn sm" data-act="sync-overwrite" style="margin-top:10px">Замінити портфель на GitHub даними з цього пристрою</button></div>
+      </div>
+      <div class="btn-line">
+        <button class="btn" data-act="sync-now">${icon('refresh', 18)} Синхронізувати зараз</button>
+        <button class="btn" data-act="sync-off">Вимкнути на цьому пристрої</button>
+      </div>`;
+  }
+  return `${head}
+    <p class="muted small">Зашифрований портфель зберігатиметься у вашому приватному репозиторії GitHub, і всі ваші пристрої бачитимуть ті самі дані. GitHub отримує лише зашифровані байти.</p>
+    <form id="sync-form" novalidate autocomplete="off">
+      <label class="field"><span>Репозиторій</span><input name="repo" value="${esc(DEFAULT_REPO)}" placeholder="користувач/cryptotracker-data" spellcheck="false" autocapitalize="off"></label>
+      <label class="field"><span>Токен доступу</span><input type="password" name="token" placeholder="github_pat_…" spellcheck="false" autocapitalize="off" autocomplete="off"></label>
+      ${TOKEN_HELP}
+      <div class="form-err" hidden></div>
+      <button class="btn primary block" type="submit">${icon('cloud', 18)} Увімкнути синхронізацію</button>
+    </form>`;
+}
+
+function bindSyncGroup() {
+  const form = $('#sync-form');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const repo = Sync.parseRepo(form.elements.repo.value);
+    const token = form.elements.token.value.trim();
+    if (!repo) return showErr(form, syncErrText('BAD_REPO'));
+    if (!token) return showErr(form, 'Вставте токен доступу');
+    const cfg = { repo: repo.full, token };
+    const btn = $('button[type=submit]', form);
+    busy(btn, true, 'Перевіряємо доступ…');
+    try {
+      await Sync.checkRepo(cfg);
+      const remote = await Sync.pull(cfg);
+      let overwrite = false;
+      if (remote) {
+        let ok = false;
+        try { ok = V.isVault(remote.vault) && !!(await V.openData(remote.vault, S.dek)); } catch { ok = false; }
+        if (!ok) {
+          if (!confirm('У репозиторії вже є портфель, зашифрований іншим ключем.\n\nЗамінити його даними з цього пристрою? Попередня версія залишиться в історії репозиторію на GitHub.\n\nЯкщо хочете навпаки — отримати той портфель сюди — натисніть «Скасувати», видаліть дані на цьому пристрої і оберіть «Уже маю портфель на іншому пристрої».')) {
+            busy(btn, false);
+            return;
+          }
+          overwrite = true;
+        }
+      }
+      S.state.sync = { ...cfg, since: Date.now() };
+      await save({ sync: false });
+      await syncNow({ overwrite });
+      $('#sync-group').innerHTML = syncGroupHtml();
+      bindSyncGroup();
+      if (!SYNC.err) toast('Синхронізацію увімкнено');
+    } catch (e2) {
+      busy(btn, false);
+      showErr(form, syncErrText(e2.code || e2.message));
+    }
+  });
 }
 
 function backupFile() {
@@ -926,6 +1153,22 @@ document.addEventListener('click', (e) => {
     'change-pw': openChangePassword,
     'new-rk': openNewRecovery,
     'wipe': wipe,
+    'sync-now': () => syncNow({ manual: true }),
+    'sync-overwrite': async () => {
+      if (!confirm('Замінити портфель на GitHub даними з цього пристрою? Попередня версія залишиться в історії репозиторію.')) return;
+      await syncNow({ overwrite: true, manual: true });
+      updateSyncUI();
+    },
+    'sync-off': async () => {
+      if (!confirm('Вимкнути синхронізацію на цьому пристрої? Дані на GitHub і на інших пристроях залишаться.')) return;
+      delete S.state.sync;
+      SYNC.err = null; SYNC.at = null;
+      await save({ sync: false });
+      $('#sync-group').innerHTML = syncGroupHtml();
+      bindSyncGroup();
+      renderView();
+      toast('Синхронізацію вимкнено');
+    },
   };
   if (handlers[act]) { e.preventDefault(); handlers[act](); }
 });
@@ -943,6 +1186,9 @@ async function boot() {
   if (!window.isSecureContext || !crypto.subtle) {
     app.innerHTML = authShell('<h1>Потрібне захищене з’єднання</h1><p class="muted">Відкрийте CryptoTracker через https:// — інакше браузер не дає доступу до шифрування.</p>');
     return;
+  }
+  if (location.hostname === 'localhost' && localStorage.getItem('ct-dev-mock-github')) {
+    await import('./dev-mock-github.js').catch(() => {});
   }
   try {
     S.market = await P.loadCachedMarket();
