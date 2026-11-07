@@ -19,7 +19,14 @@ function index(m) {
 }
 
 async function getJSON(url) {
-  const r = await fetch(url, { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
+  let r;
+  try {
+    r = await fetch(url, { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
+  } catch {
+    // Відповідь 429 від CoinGecko приходить без CORS-заголовків, і браузер бачить її
+    // як мережеву помилку. Якщо інтернет є — це майже напевно ліміт запитів.
+    throw Object.assign(new Error('NETWORK'), { code: navigator.onLine === false ? 'OFFLINE' : 429 });
+  }
   if (r.status === 429) throw Object.assign(new Error('RATE_LIMIT'), { code: 429 });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
@@ -55,12 +62,22 @@ export async function fetchMarket() {
   return index(m);
 }
 
+// Монети поза топ-250 (наприклад, токенізовані акції): ціна, зміни, графік 7 днів і логотип.
 export async function fetchSimple(ids) {
   if (!ids.length) return {};
-  const r = await getJSON(`${API}/simple/price?ids=${ids.map(encodeURIComponent).join(',')}&vs_currencies=usd&include_24hr_change=true`);
+  const list = await getJSON(`${API}/coins/markets?vs_currency=usd&ids=${ids.map(encodeURIComponent).join(',')}&sparkline=true&price_change_percentage=24h,7d&per_page=250`);
   const out = {};
-  for (const id of ids) {
-    if (r[id]?.usd != null) out[id] = { price: r[id].usd, chg24: r[id].usd_24h_change ?? null, ts: Date.now() };
+  for (const c of list) {
+    if (c.current_price == null) continue;
+    out[c.id] = {
+      price: c.current_price,
+      chg24: c.price_change_percentage_24h ?? null,
+      chg7: c.price_change_percentage_7d_in_currency ?? null,
+      spark: downsample(c.sparkline_in_7d?.price, 60),
+      image: safeImg(c.image),
+      rank: c.market_cap_rank ?? null,
+      ts: Date.now(),
+    };
   }
   return out;
 }
@@ -78,6 +95,7 @@ export async function search(query) {
 // Binance (свічка 1 год, пара <ТІКЕР>USDT). Запит видає сервісу монету й дату.
 const HOUR = 3600e3, DAY = 24 * HOUR;
 export async function priceAt(id, symbol, ts) {
+  let rateLimited = false;
   if (Date.now() - ts < 364 * DAY) {
     try {
       const from = Math.floor((ts - 3 * HOUR) / 1000), to = Math.ceil((ts + 3 * HOUR) / 1000);
@@ -88,7 +106,7 @@ export async function priceAt(id, symbol, ts) {
         for (const p of pts) if (Math.abs(p[0] - ts) < Math.abs(best[0] - ts)) best = p;
         return { price: best[1], at: best[0], source: 'CoinGecko' };
       }
-    } catch { /* пробуємо Binance */ }
+    } catch (e) { if (e.code === 429) rateLimited = true; }
   }
   const sym = String(symbol || '').toUpperCase();
   if (sym === 'USDT') return { price: 1, at: ts, source: 'USDT' };
@@ -97,9 +115,10 @@ export async function priceAt(id, symbol, ts) {
     const hour = Math.floor(ts / HOUR) * HOUR;
     const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}USDT&interval=1h&startTime=${hour}&limit=1`,
       { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
-    if (!res.ok) return null;
-    const k = await res.json();
-    if (Array.isArray(k) && k[0] && Math.abs(k[0][0] - hour) < HOUR) return { price: +k[0][1], at: k[0][0], source: 'Binance' };
+    if (res.ok) {
+      const k = await res.json();
+      if (Array.isArray(k) && k[0] && Math.abs(k[0][0] - hour) < HOUR) return { price: +k[0][1], at: k[0][0], source: 'Binance' };
+    }
   } catch { /* немає даних */ }
-  return null;
+  return rateLimited ? { error: 'RATE' } : null;
 }

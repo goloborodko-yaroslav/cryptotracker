@@ -7,7 +7,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -200,8 +200,7 @@ function checkNewPassword(pw, pw2) {
 function quote(id) {
   const m = S.market?.byId?.[id];
   if (m && m.price != null) return m;
-  const p = S.state?.prices?.[id];
-  return p ? { price: p.price, chg24: p.chg24 } : null;
+  return S.state?.prices?.[id] || null;
 }
 
 function meta(id) {
@@ -211,7 +210,7 @@ function meta(id) {
     id,
     name: saved.name || m.name || id,
     symbol: (saved.symbol || m.symbol || '?').toUpperCase(),
-    image: P.safeImg(m.image || saved.image || ''),
+    image: P.safeImg(m.image || saved.image || S.state?.prices?.[id]?.image || ''),
   };
 }
 
@@ -244,19 +243,31 @@ async function refreshPrices(force = false) {
   if (S.refreshing || !S.state) return;
   S.refreshing = true;
   $('[data-act="refresh"]')?.classList.add('spinning');
+  // Два незалежні запити: топ-250 і монети поза ним (RWA, токенізовані акції тощо).
+  // Якщо один упреться в ліміт CoinGecko, другий однаково виконається.
+  const errors = [];
   try {
-    if (force || !S.market || Date.now() - S.market.ts > 60_000) S.market = await P.fetchMarket();
-    const missing = heldIds().filter((id) => !S.market.byId[id]);
-    if (missing.length) {
-      Object.assign(S.state.prices, await P.fetchSimple(missing));
-      save();
+    if (force || !S.market || Date.now() - S.market.ts > 60_000) {
+      try { S.market = await P.fetchMarket(); } catch (e) { errors.push(e); }
     }
-    S.priceError = null;
-    if (force) toast('Ціни оновлено');
-  } catch (e) {
-    console.warn(e);
-    S.priceError = e.code === 429 ? 'CoinGecko тимчасово обмежив запити — спробуйте за хвилину' : 'Немає з’єднання з CoinGecko, показано останні відомі ціни';
-    if (force) toast(S.priceError, 'err');
+    const missing = heldIds().filter((id) => !S.market?.byId?.[id]
+      && (force || Date.now() - (S.state.prices[id]?.ts || 0) > 60_000));
+    if (missing.length) {
+      try {
+        Object.assign(S.state.prices, await P.fetchSimple(missing));
+        save({ sync: false });
+      } catch (e) { errors.push(e); }
+    }
+    if (!errors.length) {
+      S.priceError = null;
+      if (force) toast('Ціни оновлено');
+    } else {
+      console.warn(errors);
+      const rate = errors.some((e) => e.code === 429);
+      S.priceError = rate ? 'CoinGecko тимчасово обмежив запити — ціни оновляться автоматично за хвилину' : 'Немає з’єднання з CoinGecko, показано останні відомі ціни';
+      if (force) toast(S.priceError, 'err');
+      if (rate) { clearTimeout(S.retryTimer); S.retryTimer = setTimeout(() => refreshPrices(true), 65_000); }
+    }
   } finally {
     S.refreshing = false;
     $('[data-act="refresh"]')?.classList.remove('spinning');
@@ -595,7 +606,7 @@ function plural(n, one, few, many) {
 
 function coinCard(h) {
   const c = meta(h.id);
-  const q = S.market?.byId?.[h.id];
+  const q = quote(h.id);
   const spark = q?.spark ? sparkline(q.spark, { color: (q.chg7 ?? 0) >= 0 ? UP : DOWN }) : '';
   return `
     <a class="coin-card card" href="#/coin/${encodeURIComponent(h.id)}">
@@ -626,7 +637,7 @@ function coinView(id) {
   const c = meta(id);
   const k = computeCoin(txs);
   const q = quote(id);
-  const mk = S.market?.byId?.[id];
+  const mk = quote(id);
   const price = q?.price ?? null;
   const value = price != null ? k.qty * price : null;
   const unreal = value != null ? value - k.cost : null;
@@ -773,7 +784,14 @@ function openTxModal({ coinId = null, txId = null } = {}) {
     setHint('<span class="spinner sm"></span> Шукаємо ціну на цю дату…');
     const r = await P.priceAt(F.coinId, F.coinMeta?.symbol, ts).catch(() => null);
     if (seq !== fillSeq || !$('#tx-form')) return;
-    if (!r) { setHint(`${icon('alert', 14)} Ціну на цю дату не знайдено — введіть вручну`); return; }
+    if (!r || r.error) {
+      // Не лишаємо поточну ціну під старою датою: поле очищується, якщо ви не вводили ціну самі
+      if (!F.priceTouched || force) { form.elements.price.value = ''; updateSummary(); }
+      setHint(r?.error === 'RATE'
+        ? `${icon('alert', 14)} CoinGecko тимчасово обмежив запити — натисніть «Ціна на цю дату» за хвилину або введіть ціну вручну`
+        : `${icon('alert', 14)} Ціну на цю дату не знайдено — введіть вручну`);
+      return;
+    }
     if (!force && F.priceTouched) return;
     setPrice(r.price);
     setHint(`Ціна на ${dt(r.at)} · ${esc(r.source)}`);
