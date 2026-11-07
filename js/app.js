@@ -7,7 +7,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -799,7 +799,7 @@ function openTxModal({ coinId = null, txId = null } = {}) {
     }
     if (!force && F.priceTouched) return;
     setPrice(r.price);
-    setHint(`Ціна на ${dt(r.at)} · ${esc(r.source)}`);
+    setHint(r.daily ? `Ціна на ${new Date(r.at).toLocaleDateString('uk-UA', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })} · ${esc(r.source)}` : `Ціна на ${dt(r.at)} · ${esc(r.source)}`);
   }
 
   function updateSummary() {

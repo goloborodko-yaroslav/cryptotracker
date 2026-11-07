@@ -153,35 +153,90 @@ export async function search(query) {
   }));
 }
 
-// Ціна на конкретну дату й годину.
-// За останній рік — CoinGecko (погодинно). Старіші дати, або якщо CoinGecko не відповів, —
-// Binance (свічка 1 год, пара <ТІКЕР>USDT). Запит видає сервісу монету й дату.
+// Ціна на конкретну дату й годину. Джерела по черзі:
+//   1. CoinGecko — погодинно, точний токен за id (безкоштовно лише за останні 365 днів);
+//   2. Binance — свічка 1 год, пара ТІКЕР/USDT (повна історія, але без делістингованих монет, напр. XMR);
+//   3. Kraken — пара ТІКЕР/USD, також токенізовані акції xStocks (AAPLx, NVDAx…).
+//      Kraken віддає останні 720 свічок, тому для старих дат свічка ширша (4 год, доба, тиждень).
+// Такий запит показує сервісу монету й дату, але не ваш портфель.
 const HOUR = 3600e3, DAY = 24 * HOUR;
+
+async function fromCoinGecko(id, ts) {
+  const from = Math.floor((ts - 3 * HOUR) / 1000), to = Math.ceil((ts + 3 * HOUR) / 1000);
+  const r = await getJSON(`${API}/coins/${encodeURIComponent(id)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`);
+  const pts = r.prices || [];
+  if (!pts.length) return null;
+  let best = pts[0];
+  for (const p of pts) if (Math.abs(p[0] - ts) < Math.abs(best[0] - ts)) best = p;
+  return { price: best[1], at: best[0], source: 'CoinGecko' };
+}
+
+async function plainJSON(url) {
+  const res = await fetch(url, { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
+  return res.ok ? res.json() : null;
+}
+
+async function fromBinance(sym, ts) {
+  const hour = Math.floor(ts / HOUR) * HOUR;
+  const k = await plainJSON(`https://api.binance.com/api/v3/klines?symbol=${sym}USDT&interval=1h&startTime=${hour}&limit=1`);
+  if (Array.isArray(k) && k[0] && Math.abs(k[0][0] - hour) < HOUR) return { price: +k[0][1], at: k[0][0], source: 'Binance' };
+  return null;
+}
+
+// Базовий тікер акції для різних емітентів токенів: TSLAX (xStocks), TSLAON (Ondo), TSLAB (bStocks), TSLA (Robinhood)
+function stockTicker(id, sym) {
+  if (/-xstock$/.test(id) && /X$/.test(sym)) return sym.slice(0, -1);
+  if (/-ondo-/.test(id) && /ON$/.test(sym)) return sym.slice(0, -2);
+  if (/bstock/.test(id) && /B$/.test(sym)) return sym.slice(0, -1);
+  if (/robinhood/.test(id)) return sym;
+  return null;
+}
+
+async function fromKraken(id, sym, ts) {
+  const age = Date.now() - ts;
+  const interval = age < 29 * DAY ? 60 : age < 118 * DAY ? 240 : age < 715 * DAY ? 1440 : 10080; // хвилини
+  const stock = stockTicker(id, sym);
+  const pair = stock ? `${stock}xUSD&asset_class=tokenized_asset` : `${sym}USD`;
+  const step = interval * 60;
+  const tsSec = Math.floor(ts / 1000);
+  const r = await plainJSON(`https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${interval}&since=${tsSec - step}`);
+  if (!r || r.error?.length || !r.result) return null;
+  const key = Object.keys(r.result).find((k) => k !== 'last');
+  const rows = key ? r.result[key] : null;
+  if (!Array.isArray(rows)) return null;
+  const c = rows.find((row) => row[0] <= tsSec && tsSec < row[0] + step);
+  if (!c) return null;
+  const vwap = +c[5], close = +c[4];
+  const label = interval >= 1440 ? (interval === 1440 ? 'середня за добу' : 'середня за тиждень') : null;
+  const name = stock && `${stock}X` !== sym ? `Kraken ${stock}x` : 'Kraken';
+  return { price: vwap > 0 ? vwap : close, at: c[0] * 1000, source: label ? `${name}, ${label}` : name, daily: interval >= 1440 };
+}
+
 export async function priceAt(id, symbol, ts) {
   let rateLimited = false;
+  const sym = String(symbol || '').toUpperCase();
   if (Date.now() - ts < 364 * DAY) {
     try {
-      const from = Math.floor((ts - 3 * HOUR) / 1000), to = Math.ceil((ts + 3 * HOUR) / 1000);
-      const r = await getJSON(`${API}/coins/${encodeURIComponent(id)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`);
-      const pts = r.prices || [];
-      if (pts.length) {
-        let best = pts[0];
-        for (const p of pts) if (Math.abs(p[0] - ts) < Math.abs(best[0] - ts)) best = p;
-        return { price: best[1], at: best[0], source: 'CoinGecko' };
-      }
+      const r = await fromCoinGecko(id, ts);
+      if (r) return r;
     } catch (e) { if (e.code === 429) rateLimited = true; }
   }
-  const sym = String(symbol || '').toUpperCase();
   if (sym === 'USDT') return { price: 1, at: ts, source: 'USDT' };
-  if (!/^[A-Z0-9]{2,12}$/.test(sym)) return null;
-  try {
-    const hour = Math.floor(ts / HOUR) * HOUR;
-    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}USDT&interval=1h&startTime=${hour}&limit=1`,
-      { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
-    if (res.ok) {
-      const k = await res.json();
-      if (Array.isArray(k) && k[0] && Math.abs(k[0][0] - hour) < HOUR) return { price: +k[0][1], at: k[0][0], source: 'Binance' };
-    }
-  } catch { /* немає даних */ }
+  if (!/^[A-Z0-9]{2,12}$/.test(sym)) return rateLimited ? { error: 'RATE' } : null;
+  const isStock = !!stockTicker(id, sym);
+  const sources = isStock ? [() => fromKraken(id, sym, ts)] : [() => fromBinance(sym, ts), () => fromKraken(id, sym, ts)];
+  // Токенізоване золото: якщо історії цього токена немає, беремо PAXG (обидва ≈ ціна унції золота)
+  if (/gold/.test(id) && sym !== 'PAXG') {
+    sources.push(async () => {
+      const r = await fromBinance('PAXG', ts);
+      return r && { ...r, source: 'Binance PAXG ≈ унція золота' };
+    });
+  }
+  for (const src of sources) {
+    try {
+      const r = await src();
+      if (r) return r;
+    } catch { /* наступне джерело */ }
+  }
   return rateLimited ? { error: 'RATE' } : null;
 }
