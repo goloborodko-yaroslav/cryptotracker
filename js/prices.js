@@ -72,3 +72,34 @@ export async function search(query) {
     image: safeImg(c.large || c.thumb),
   }));
 }
+
+// Ціна на конкретну дату й годину.
+// За останній рік — CoinGecko (погодинно). Старіші дати, або якщо CoinGecko не відповів, —
+// Binance (свічка 1 год, пара <ТІКЕР>USDT). Запит видає сервісу монету й дату.
+const HOUR = 3600e3, DAY = 24 * HOUR;
+export async function priceAt(id, symbol, ts) {
+  if (Date.now() - ts < 364 * DAY) {
+    try {
+      const from = Math.floor((ts - 3 * HOUR) / 1000), to = Math.ceil((ts + 3 * HOUR) / 1000);
+      const r = await getJSON(`${API}/coins/${encodeURIComponent(id)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`);
+      const pts = r.prices || [];
+      if (pts.length) {
+        let best = pts[0];
+        for (const p of pts) if (Math.abs(p[0] - ts) < Math.abs(best[0] - ts)) best = p;
+        return { price: best[1], at: best[0], source: 'CoinGecko' };
+      }
+    } catch { /* пробуємо Binance */ }
+  }
+  const sym = String(symbol || '').toUpperCase();
+  if (sym === 'USDT') return { price: 1, at: ts, source: 'USDT' };
+  if (!/^[A-Z0-9]{2,12}$/.test(sym)) return null;
+  try {
+    const hour = Math.floor(ts / HOUR) * HOUR;
+    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}USDT&interval=1h&startTime=${hour}&limit=1`,
+      { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
+    if (!res.ok) return null;
+    const k = await res.json();
+    if (Array.isArray(k) && k[0] && Math.abs(k[0][0] - hour) < HOUR) return { price: +k[0][1], at: k[0][0], source: 'Binance' };
+  } catch { /* немає даних */ }
+  return null;
+}

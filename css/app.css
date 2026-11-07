@@ -400,3 +400,8 @@ a.legend-row:hover { background: var(--surface-2); }
 .warn-box > div { min-width: 0; }
 .warn-box .btn { white-space: normal; height: auto; min-height: 34px; padding: 8px 12px; text-align: left; color: var(--text); }
 .modal { overflow-x: hidden; }
+
+.price-hint { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; margin: -6px 2px 14px; min-height: 20px; font-size: 13px; color: var(--muted); }
+.price-hint #price-hint-text { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.price-hint #price-hint-text .ico, .price-hint #price-hint-text .spinner { display: inline-block; vertical-align: -3px; margin-right: 4px; }
+.hint-btn { flex: none; background: none; border: 0; padding: 4px 0; color: var(--text); font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }

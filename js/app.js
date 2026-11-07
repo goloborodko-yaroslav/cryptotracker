@@ -7,7 +7,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -643,7 +643,7 @@ function coinView(id) {
           <div class="muted small">${dt(t.date)}${t.note ? ' · ' + esc(t.note) : ''}</div>
         </div>
         <div class="tx-num"><span class="money">${t.type === 'out' ? '—' : usd(t.price || 0)}</span><small class="muted">ціна</small></div>
-        <div class="tx-num"><span class="money">${total == null ? '—' : usd(total)}</span><small class="muted">${t.fee ? 'комісія ' + usd(t.fee) : 'сума'}</small></div>
+        <div class="tx-num"><span class="money">${total == null ? '—' : usd(total)}</span><small class="muted">сума</small></div>
         <div class="tx-actions">
           <button class="icon-btn sm" data-act="edit-tx" data-id="${esc(t.id)}" title="Редагувати">${icon('edit', 17)}</button>
           <button class="icon-btn sm danger" data-act="del-tx" data-id="${esc(t.id)}" title="Видалити">${icon('trash', 17)}</button>
@@ -676,7 +676,7 @@ function coinView(id) {
       ${tile('Нереалізований P&L', usd(unreal, { sign: true }), tone(unreal), unreal != null && k.cost > 0 ? pct((unreal / k.cost) * 100) : '')}
       ${tile('Реалізований P&L', usd(k.realized, { sign: true }), tone(k.realized), k.sold ? `продано ${fq(k.sold)}` : 'продажів не було')}
       ${tile('Загальний P&L', usd(pnl, { sign: true }), tone(pnl), k.invested > 0 ? pct((pnl / k.invested) * 100) : '')}
-      ${tile('Вкладено всього', usd(k.invested), '', `комісії ${usd(k.fees)}`)}
+      ${tile('Вкладено всього', usd(k.invested))}
     </div>
     <section class="card tx-card">
       <div class="section-head in"><h2>Транзакції</h2><span class="muted small">${txs.length}</span></div>
@@ -724,14 +724,12 @@ function openTxModal({ coinId = null, txId = null } = {}) {
       <div class="seg" role="radiogroup">
         ${Object.entries(TX_TYPES).map(([k, v]) => `<label><input type="radio" name="type" value="${k}" ${F.type === k ? 'checked' : ''}><span class="t-${k}">${v}</span></label>`).join('')}
       </div>
+      <label class="field"><span>Дата й час</span><input type="datetime-local" name="date" value="${toLocalInput(tx?.date || Date.now())}"></label>
       <div class="row2">
         <label class="field"><span>Кількість</span><input name="qty" inputmode="decimal" placeholder="0.00" value="${tx ? tx.qty : ''}"></label>
         <label class="field" id="price-field"><span id="price-label">Ціна за монету, $</span><input name="price" inputmode="decimal" placeholder="0.00" value="${tx && tx.type !== 'out' ? tx.price : ''}"></label>
       </div>
-      <div class="row2">
-        <label class="field"><span>Дата й час</span><input type="datetime-local" name="date" value="${toLocalInput(tx?.date || Date.now())}"></label>
-        <label class="field"><span>Комісія, $</span><input name="fee" inputmode="decimal" placeholder="0" value="${tx?.fee || ''}"></label>
-      </div>
+      <div class="price-hint" id="price-hint"><span id="price-hint-text"></span><button type="button" class="hint-btn" id="fill-price">Ціна на цю дату</button></div>
       <label class="field"><span>Нотатка <em>(необов’язково)</em></span><input name="note" maxlength="140" placeholder="Біржа, гаманець, коментар" value="${esc(tx?.note || '')}"></label>
       <div class="tx-summary" id="tx-summary"></div>
       <div class="form-err" hidden></div>
@@ -747,23 +745,50 @@ function openTxModal({ coinId = null, txId = null } = {}) {
     pf.hidden = F.type === 'out';
     $('#price-label').textContent = F.type === 'in' ? 'Собівартість за монету, $' : 'Ціна за монету, $';
     form.elements.price.placeholder = F.type === 'in' ? '0 — подарунок / airdrop' : '0.00';
-    if (!F.priceTouched && F.coinId && (F.type === 'buy' || F.type === 'sell')) {
-      const qp = quote(F.coinId)?.price;
-      if (qp != null) form.elements.price.value = String(+qp.toPrecision(8));
-    }
+    $('#price-hint').hidden = !F.coinId || F.type === 'out';
+    fillPrice();
     updateSummary();
   }
 
+  // Ціна на обрану дату: підставляється сама, поки ви не ввели ціну вручну
+  let fillSeq = 0;
+  const setHint = (html) => ($('#price-hint-text').innerHTML = html);
+  function setPrice(v) {
+    form.elements.price.value = String(+(+v).toPrecision(8));
+    F.priceTouched = false;
+    updateSummary();
+  }
+  async function fillPrice(force = false) {
+    if (!F.coinId || F.type === 'out') return;
+    if (!force && (F.priceTouched || !(F.type === 'buy' || F.type === 'sell'))) return;
+    const ts = new Date(form.elements.date.value).getTime();
+    if (!isFinite(ts)) return;
+    const seq = ++fillSeq;
+    if (ts > Date.now() + 60_000) { setHint('Дата в майбутньому'); return; }
+    if (Date.now() - ts < 15 * 60_000) {
+      const qp = quote(F.coinId)?.price;
+      if (qp != null) { setPrice(qp); setHint('Поточна ціна'); }
+      return;
+    }
+    setHint('<span class="spinner sm"></span> Шукаємо ціну на цю дату…');
+    const r = await P.priceAt(F.coinId, F.coinMeta?.symbol, ts).catch(() => null);
+    if (seq !== fillSeq || !$('#tx-form')) return;
+    if (!r) { setHint(`${icon('alert', 14)} Ціну на цю дату не знайдено — введіть вручну`); return; }
+    if (!force && F.priceTouched) return;
+    setPrice(r.price);
+    setHint(`Ціна на ${dt(r.at)} · ${esc(r.source)}`);
+  }
+
   function updateSummary() {
-    const q = parseNum(form.elements.qty.value), p = parseNum(form.elements.price.value) || 0, f = parseNum(form.elements.fee.value) || 0;
+    const q = parseNum(form.elements.qty.value), p = parseNum(form.elements.price.value) || 0;
     const sym = F.coinMeta?.symbol || '';
     const el = $('#tx-summary');
     if (!(q > 0)) { el.innerHTML = ''; return; }
     let html = '';
-    if (F.type === 'buy') html = `Ви платите <b>${usd(q * p + f)}</b>`;
-    else if (F.type === 'sell') html = `Ви отримуєте <b>${usd(q * p - f)}</b>`;
-    else if (F.type === 'in') html = `Надходить <b>${fq(q)} ${esc(sym)}</b>${p ? ` із собівартістю ${usd(q * p + f)}` : ''}`;
-    else html = `Виходить <b>${fq(q)} ${esc(sym)}</b>${f ? `, комісія ${usd(f)}` : ''}`;
+    if (F.type === 'buy') html = `Ви платите <b>${usd(q * p)}</b>`;
+    else if (F.type === 'sell') html = `Ви отримуєте <b>${usd(q * p)}</b>`;
+    else if (F.type === 'in') html = `Надходить <b>${fq(q)} ${esc(sym)}</b>${p ? ` із собівартістю ${usd(q * p)}` : ''}`;
+    else html = `Виходить <b>${fq(q)} ${esc(sym)}</b>`;
     if ((F.type === 'sell' || F.type === 'out') && F.coinId) {
       const have = computeCoin(S.state.txs.filter((t) => t.coinId === F.coinId && t.id !== tx?.id)).qty;
       if (q > have + 1e-10) html += `<div class="warn-inline">${icon('alert', 14)} У вас лише ${fq(have)} ${esc(sym)}</div>`;
@@ -862,29 +887,31 @@ function openTxModal({ coinId = null, txId = null } = {}) {
     else if (b.dataset.pick) selectCoin(b.dataset.pick);
     else if (b.dataset.remote) remoteSearch(b.dataset.remote, b);
   });
-  form.addEventListener('change', (e) => { if (e.target.name === 'type') updateType(); });
-  form.addEventListener('input', (e) => {
-    if (e.target.name === 'price') F.priceTouched = true;
-    if (['qty', 'price', 'fee'].includes(e.target.name)) updateSummary();
+  form.addEventListener('change', (e) => {
+    if (e.target.name === 'type') updateType();
+    if (e.target.name === 'date') fillPrice();
   });
+  form.addEventListener('input', (e) => {
+    if (e.target.name === 'price') { F.priceTouched = true; setHint(''); }
+    if (['qty', 'price'].includes(e.target.name)) updateSummary();
+  });
+  $('#fill-price').addEventListener('click', () => fillPrice(true));
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const q = parseNum(form.elements.qty.value);
     const p = F.type === 'out' ? 0 : parseNum(form.elements.price.value || (F.type === 'in' ? '0' : ''));
-    const f = parseNum(form.elements.fee.value || '0');
     const date = new Date(form.elements.date.value).getTime();
     if (!F.coinId) return showErr(form, 'Оберіть монету');
     if (!(q > 0)) return showErr(form, 'Вкажіть кількість більше нуля');
     if ((F.type === 'buy' || F.type === 'sell') && !(p > 0)) return showErr(form, 'Вкажіть ціну за монету');
     if (!(p >= 0)) return showErr(form, 'Невірна ціна');
-    if (!(f >= 0)) return showErr(form, 'Невірна комісія');
     if (!isFinite(date)) return showErr(form, 'Вкажіть дату');
 
     S.state.coins[F.coinId] = { ...F.coinMeta };
     const rec = {
       id: tx?.id || crypto.randomUUID(),
-      coinId: F.coinId, type: F.type, qty: q, price: p, fee: f, date,
+      coinId: F.coinId, type: F.type, qty: q, price: p, date,
       note: form.elements.note.value.trim().slice(0, 140),
       created: tx?.created || Date.now(),
       updated: Date.now(),

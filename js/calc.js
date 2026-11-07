@@ -1,10 +1,11 @@
 // Розрахунок P&L методом середньої ціни (як на CryptoRank).
 //
-// Купівля:        кількість += q; собівартість += q·ціна + комісія
-// Переказ (вхід): кількість += q; собівартість += q·ціна(необов'язково) + комісія
+// Купівля:        кількість += q; собівартість += q·ціна
+// Переказ (вхід): кількість += q; собівартість += q·ціна (необов'язково)
 // Продаж:         собівартість зменшується пропорційно (за середньою ціною),
-//                 реалізований P&L += q·ціна − комісія − списана собівартість
-// Переказ (вихід):собівартість зменшується пропорційно, комісія йде у збиток
+//                 реалізований P&L += q·ціна − списана собівартість
+// Переказ (вихід):собівартість зменшується пропорційно
+// Комісії не враховуються.
 // Середня ціна купівлі = собівартість / кількість.
 
 export const TX_TYPES = {
@@ -21,14 +22,13 @@ export function sortTxs(txs) {
 }
 
 export function computeCoin(txs) {
-  let qty = 0, cost = 0, realized = 0, invested = 0, bought = 0, sold = 0, fees = 0, oversold = false;
+  let qty = 0, cost = 0, realized = 0, invested = 0, bought = 0, sold = 0, oversold = false;
   for (const t of sortTxs(txs)) {
-    const q = +t.qty || 0, p = +t.price || 0, f = +t.fee || 0;
-    fees += f;
+    const q = +t.qty || 0, p = +t.price || 0;
     if (t.type === 'buy' || t.type === 'in') {
       qty += q;
-      cost += q * p + f;
-      invested += q * p + f;
+      cost += q * p;
+      invested += q * p;
       if (t.type === 'buy') bought += q;
     } else if (t.type === 'sell' || t.type === 'out') {
       const take = Math.min(q, qty);
@@ -37,12 +37,11 @@ export function computeCoin(txs) {
       const out = avg * take;
       cost -= out;
       qty -= take;
-      if (t.type === 'sell') { realized += q * p - f - out; sold += q; }
-      else realized -= f;
+      if (t.type === 'sell') { realized += q * p - out; sold += q; }
     }
     if (qty <= EPS) { qty = 0; cost = 0; }
   }
-  return { qty, cost, avg: qty > 0 ? cost / qty : 0, realized, invested, bought, sold, fees, oversold, count: txs.length };
+  return { qty, cost, avg: qty > 0 ? cost / qty : 0, realized, invested, bought, sold, oversold, count: txs.length };
 }
 
 // quote(id) → { price, chg24, ... } | null
