@@ -18,18 +18,55 @@ function index(m) {
   return { ...m, byId: Object.fromEntries(m.list.map((c) => [c.id, c])) };
 }
 
-async function getJSON(url) {
-  let r;
-  try {
-    r = await fetch(url, { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
-  } catch {
-    // Відповідь 429 від CoinGecko приходить без CORS-заголовків, і браузер бачить її
-    // як мережеву помилку. Якщо інтернет є — це майже напевно ліміт запитів.
-    throw Object.assign(new Error('NETWORK'), { code: navigator.onLine === false ? 'OFFLINE' : 429 });
-  }
-  if (r.status === 429) throw Object.assign(new Error('RATE_LIMIT'), { code: 429 });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.json();
+// ---------- Черга запитів до CoinGecko ----------
+// Безкоштовний доступ дозволяє лише кілька запитів на хвилину (з мобільного інтернету —
+// ще менше, бо одну IP ділять тисячі абонентів). Тому запити йдуть по одному з паузою,
+// а після відмови ми хвилину не стукаємо, щоб не продовжувати блокування.
+// Безкоштовний ключ CoinGecko (Demo) піднімає ліміт до ~30 запитів на хвилину.
+let apiKey = '';
+let queue = Promise.resolve();
+let nextAt = 0;
+let blockedUntil = 0;
+export function setApiKey(k) { apiKey = String(k || '').trim(); }
+export const hasApiKey = () => !!apiKey;
+export const blockedFor = () => Math.max(0, Math.ceil((blockedUntil - Date.now()) / 1000));
+const rateErr = () => Object.assign(new Error('RATE_LIMIT'), { code: 429 });
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function getJSON(url) {
+  const run = async () => {
+    if (Date.now() < blockedUntil) throw rateErr();
+    const gap = nextAt - Date.now();
+    if (gap > 0) await wait(gap);
+    nextAt = Date.now() + (apiKey ? 1200 : 2500);
+    const full = apiKey ? `${url}${url.includes('?') ? '&' : '?'}x_cg_demo_api_key=${encodeURIComponent(apiKey)}` : url;
+    let r;
+    try {
+      r = await fetch(full, { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' });
+    } catch {
+      // Відповідь 429 від CoinGecko приходить без CORS-заголовків, і браузер бачить її
+      // як мережеву помилку. Якщо інтернет є — це майже напевно ліміт запитів.
+      if (navigator.onLine === false) throw Object.assign(new Error('OFFLINE'), { code: 'OFFLINE' });
+      blockedUntil = Date.now() + 60_000;
+      throw rateErr();
+    }
+    if (r.status === 429) { blockedUntil = Date.now() + 60_000; throw rateErr(); }
+    if (r.status === 401 || r.status === 403) throw Object.assign(new Error('BAD_KEY'), { code: 'BAD_KEY' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  };
+  const p = queue.then(run, run);
+  queue = p.catch(() => {});
+  return p;
+}
+
+export async function checkApiKey(k) {
+  const r = await fetch(`${API}/ping?x_cg_demo_api_key=${encodeURIComponent(k)}`, { referrerPolicy: 'no-referrer', credentials: 'omit', cache: 'no-store' })
+    .catch(() => null);
+  if (!r) throw Object.assign(new Error('NETWORK'), { code: 'NETWORK' });
+  if (r.status === 401 || r.status === 403 || r.status === 400) throw Object.assign(new Error('BAD_KEY'), { code: 'BAD_KEY' });
+  if (!r.ok && r.status !== 429) throw new Error('HTTP ' + r.status);
+  return true;
 }
 
 function downsample(arr, n) {
@@ -80,6 +117,32 @@ export async function fetchSimple(ids) {
     };
   }
   return out;
+}
+
+// Локальний довідник токенізованих акцій, ETF і золота — для пошуку без запитів.
+// Оновлюється раз на 12 годин; ціни в ньому лише орієнтовні (для списку вибору).
+const RWA_CATEGORIES = ['tokenized-stock', 'tokenized-gold'];
+export async function loadRwa() {
+  const cached = await db.get('rwa');
+  if (cached?.list && Date.now() - cached.ts < 12 * 3600e3) return cached;
+  const list = [];
+  const seen = new Set();
+  for (const cat of RWA_CATEGORIES) {
+    try {
+      const r = await getJSON(`${API}/coins/markets?vs_currency=usd&category=${cat}&order=market_cap_desc&per_page=250&page=1`);
+      for (const c of r) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        list.push({ id: c.id, symbol: c.symbol, name: c.name, image: safeImg(c.image), price: c.current_price, rank: c.market_cap_rank, rwa: true });
+      }
+    } catch (e) {
+      if (cached?.list) return cached;
+      if (!list.length) throw e;
+    }
+  }
+  const m = { ts: Date.now(), list };
+  await db.set('rwa', m);
+  return m;
 }
 
 export async function search(query) {

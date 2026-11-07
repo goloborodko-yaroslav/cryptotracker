@@ -7,7 +7,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.5.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -247,11 +247,11 @@ async function refreshPrices(force = false) {
   // Якщо один упреться в ліміт CoinGecko, другий однаково виконається.
   const errors = [];
   try {
-    if (force || !S.market || Date.now() - S.market.ts > 60_000) {
+    if (force || !S.market || Date.now() - S.market.ts > 150_000) {
       try { S.market = await P.fetchMarket(); } catch (e) { errors.push(e); }
     }
     const missing = heldIds().filter((id) => !S.market?.byId?.[id]
-      && (force || Date.now() - (S.state.prices[id]?.ts || 0) > 60_000));
+      && (force || Date.now() - (S.state.prices[id]?.ts || 0) > 150_000));
     if (missing.length) {
       try {
         Object.assign(S.state.prices, await P.fetchSimple(missing));
@@ -264,7 +264,11 @@ async function refreshPrices(force = false) {
     } else {
       console.warn(errors);
       const rate = errors.some((e) => e.code === 429);
-      S.priceError = rate ? 'CoinGecko тимчасово обмежив запити — ціни оновляться автоматично за хвилину' : 'Немає з’єднання з CoinGecko, показано останні відомі ціни';
+      const badKey = errors.some((e) => e.code === 'BAD_KEY');
+      S.priceError = badKey ? 'Ключ CoinGecko недійсний — перевірте його в налаштуваннях'
+        : rate ? (P.hasApiKey() ? 'CoinGecko тимчасово обмежив запити — ціни оновляться автоматично'
+          : 'CoinGecko обмежив безкоштовні запити — ціни оновляться за хвилину. Щоб цього не було, додайте безкоштовний ключ CoinGecko в налаштуваннях')
+        : 'Немає з’єднання з CoinGecko, показано останні відомі ціни';
       if (force) toast(S.priceError, 'err');
       if (rate) { clearTimeout(S.retryTimer); S.retryTimer = setTimeout(() => refreshPrices(true), 65_000); }
     }
@@ -467,6 +471,7 @@ function enterApp() {
   S.state.prices ??= {};
   S.state.coins ??= {};
   S.state.deleted ??= {};
+  P.setApiKey(S.state.cgKey);
   if (S.pendingSync) {
     S.state.sync = { ...S.pendingSync, since: Date.now() };
     S.pendingSync = null;
@@ -483,7 +488,7 @@ function enterApp() {
   ['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach((ev) =>
     addEventListener(ev, () => (S.lastActive = Date.now()), { passive: true }));
   setInterval(checkAutoLock, 10_000);
-  setInterval(() => { if (document.visibilityState === 'visible') refreshPrices(); }, 120_000);
+  setInterval(() => { if (document.visibilityState === 'visible') refreshPrices(); }, 180_000);
   setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 60_000);
   document.addEventListener('visibilitychange', () => {
     document.body.classList.toggle('obscured', document.visibilityState === 'hidden');
@@ -837,9 +842,13 @@ function openTxModal({ coinId = null, txId = null } = {}) {
     setTimeout(() => qi.focus(), 50);
   }
 
+  let autoTimer;
+  if (!S.rwa) P.loadRwa().then((m) => { S.rwa = m; const qi = $('#coin-q'); if (qi) renderResults(qi.value); }).catch(() => {});
   function renderResults(qRaw) {
     const q = qRaw.trim().toLowerCase();
-    const list = S.market?.list || [];
+    const top = S.market?.list || [];
+    const topIds = new Set(top.map((c) => c.id));
+    const list = [...top, ...(S.rwa?.list || []).filter((c) => !topIds.has(c.id))];
     let items;
     if (!q) {
       const held = heldIds().map((id) => ({ ...meta(id), held: true }));
@@ -857,10 +866,18 @@ function openTxModal({ coinId = null, txId = null } = {}) {
       };
       items = list.map((c) => [score(c), c]).filter(([s]) => s < 9).sort((a, b) => a[0] - b[0] || (a[1].rank ?? 1e9) - (b[1].rank ?? 1e9)).slice(0, 12).map(([, c]) => c);
     }
+    clearTimeout(autoTimer);
+    if (q.length >= 2 && !items.length) {
+      // Нічого не знайшли локально — самі шукаємо у всій базі CoinGecko
+      autoTimer = setTimeout(() => {
+        const b = $('[data-remote]');
+        if (b && !b.disabled && $('#coin-q')?.value.trim().toLowerCase() === q) remoteSearch(b.dataset.remote, b);
+      }, 700);
+    }
     const el = $('#pick-list');
     el.innerHTML = items.map((c) => {
       const m = { id: c.id, name: c.name, symbol: String(c.symbol).toUpperCase(), image: P.safeImg(c.image || '') };
-      const qp = quote(c.id)?.price;
+      const qp = quote(c.id)?.price ?? (c.rwa ? c.price : null);
       return `<button type="button" class="pick-item" data-pick="${esc(c.id)}">
         ${logo(c.id, 'md', m)}<span class="pi-name"><b>${esc(m.name)}</b><span class="muted">${esc(m.symbol)}${c.held ? ' · у портфелі' : ''}</span></span>
         <span class="pi-price money">${qp != null ? usd(qp) : ''}</span></button>`;
@@ -880,12 +897,12 @@ function openTxModal({ coinId = null, txId = null } = {}) {
         : '<div class="muted pad">Нічого не знайдено</div>';
     } catch (e) {
       btn.disabled = false;
-      btn.textContent = e.code === 429 ? 'CoinGecko обмежив запити, спробуйте пізніше' : 'Помилка пошуку — спробуйте ще раз';
+      btn.textContent = e.code === 429 ? `CoinGecko обмежив запити — спробуйте через ${P.blockedFor() || 60} с` : 'Помилка пошуку — спробуйте ще раз';
     }
   }
 
   async function selectCoin(id) {
-    const fromMarket = S.market?.byId?.[id];
+    const fromMarket = S.market?.byId?.[id] || S.rwa?.list?.find((c) => c.id === id);
     const r = F.remote[id];
     const src = fromMarket || r || meta(id);
     F.coinId = id;
@@ -974,6 +991,7 @@ function openSettings() {
       <button class="set-row btn-row" data-act="change-pw"><span>Змінити головний пароль</span>${icon('chevron', 18)}</button>
       <button class="set-row btn-row" data-act="new-rk"><span>Створити новий ключ відновлення</span>${icon('chevron', 18)}</button>
     </div>
+    <div class="set-group" id="cg-group">${cgGroupHtml()}</div>
     <div class="set-group" id="sync-group">${syncGroupHtml()}</div>
     <div class="set-group">
       <h3>${icon('download', 16)} Резервна копія</h3>
@@ -1001,6 +1019,56 @@ function openSettings() {
   });
   $('#import-file').addEventListener('change', (e) => importBackup(e.target.files[0]));
   bindSyncGroup();
+  bindCgGroup();
+}
+
+function cgGroupHtml() {
+  const head = `<h3>${icon('refresh', 16)} Ціни CoinGecko</h3>`;
+  if (S.state.cgKey) {
+    return `${head}
+      <div class="set-row"><span>Ключ API</span><b class="mono">${esc(S.state.cgKey.slice(0, 6))}…${esc(S.state.cgKey.slice(-4))}</b></div>
+      <div class="btn-line"><button class="btn" data-act="cg-key-off">Видалити ключ</button></div>`;
+  }
+  return `${head}
+    <p class="muted small">Без ключа CoinGecko дозволяє лише кілька запитів на хвилину, особливо з мобільного інтернету. Через це ціни RWA й рідших монет можуть не підтягуватися. Безкоштовний ключ (план Demo) піднімає ліміт приблизно до 30 запитів на хвилину.</p>
+    <form id="cg-form" novalidate autocomplete="off">
+      <label class="field"><span>Ключ API (необов’язково)</span><input type="password" name="key" placeholder="CG-…" spellcheck="false" autocapitalize="off" autocomplete="off"></label>
+      <details class="howto">
+        <summary>Як отримати безкоштовний ключ</summary>
+        <ol>
+          <li>Зареєструйтеся на <a href="https://www.coingecko.com/en/developers/dashboard" target="_blank" rel="noopener noreferrer">coingecko.com → Developer Dashboard</a>.</li>
+          <li>Оберіть безкоштовний план <b>Demo</b>.</li>
+          <li>Натисніть <b>+ Add New Key</b> і скопіюйте ключ (починається з <code>CG-</code>).</li>
+        </ol>
+        <p>Ключ зберігається всередині зашифрованих даних і синхронізується між вашими пристроями.</p>
+      </details>
+      <div class="form-err" hidden></div>
+      <button class="btn block" type="submit">Зберегти ключ</button>
+    </form>`;
+}
+
+function bindCgGroup() {
+  const form = $('#cg-form');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const key = form.elements.key.value.trim();
+    if (!/^CG-[A-Za-z0-9]{10,}$/.test(key)) return showErr(form, 'Ключ має виглядати як CG-xxxxxxxx');
+    const btn = $('button[type=submit]', form);
+    busy(btn, true, 'Перевіряємо…');
+    try {
+      await P.checkApiKey(key);
+      S.state.cgKey = key;
+      P.setApiKey(key);
+      await save();
+      $('#cg-group').innerHTML = cgGroupHtml();
+      toast('Ключ збережено');
+      refreshPrices(true);
+    } catch (e2) {
+      busy(btn, false);
+      showErr(form, e2.code === 'BAD_KEY' ? 'CoinGecko не прийняв цей ключ' : 'Не вдалося перевірити ключ — немає з’єднання');
+    }
+  });
 }
 
 function syncGroupHtml() {
@@ -1199,6 +1267,14 @@ document.addEventListener('click', (e) => {
     'new-rk': openNewRecovery,
     'wipe': wipe,
     'sync-now': () => syncNow({ manual: true }),
+    'cg-key-off': async () => {
+      if (!confirm('Видалити ключ CoinGecko? Ціни знову йтимуть через безкоштовний доступ з низьким лімітом.')) return;
+      S.state.cgKey = ''; // порожній рядок, щоб синхронізація не повернула старий ключ
+      P.setApiKey('');
+      await save();
+      $('#cg-group').innerHTML = cgGroupHtml();
+      bindCgGroup();
+    },
     'sync-overwrite': async () => {
       if (!confirm('Замінити портфель на GitHub даними з цього пристрою? Попередня версія залишиться в історії репозиторію.')) return;
       await syncNow({ overwrite: true, manual: true });

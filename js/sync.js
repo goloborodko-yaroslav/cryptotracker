@@ -107,6 +107,7 @@ export function mergeStates(local, remote) {
     prices,
     settings: local.settings || remote.settings, // налаштування — свої на кожному пристрої
     sync: local.sync || remote.sync,
+    cgKey: 'cgKey' in local ? local.cgKey : remote.cgKey,
   };
 }
 
