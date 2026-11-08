@@ -120,12 +120,14 @@ export async function fetchSimple(ids) {
   return out;
 }
 
-// Локальний довідник токенізованих акцій, ETF і золота — для пошуку без запитів.
+// Локальний довідник токенізованих активів (акції, золото, срібло, кредити) — для пошуку
+// без запитів і щоб не показувати їх серед криптовалют у Cap.
 // Оновлюється раз на 12 годин; ціни в ньому лише орієнтовні (для списку вибору).
-const RWA_CATEGORIES = ['tokenized-stock', 'tokenized-gold'];
+const RWA_CATEGORIES = ['tokenized-stock', 'tokenized-gold', 'tokenized-silver', 'tokenized-private-credit'];
+const RWA_V = 2;
 export async function loadRwa() {
   const cached = await db.get('rwa');
-  if (cached?.list && Date.now() - cached.ts < 12 * 3600e3) return cached;
+  if (cached?.list && cached.v === RWA_V && Date.now() - cached.ts < 12 * 3600e3) return cached;
   const list = [];
   const seen = new Set();
   for (const cat of RWA_CATEGORIES) {
@@ -141,7 +143,7 @@ export async function loadRwa() {
       if (!list.length) throw e;
     }
   }
-  const m = { ts: Date.now(), list };
+  const m = { ts: Date.now(), v: RWA_V, list };
   await db.set('rwa', m);
   return m;
 }
@@ -168,6 +170,21 @@ export async function fetchCapRwa(n = 20) {
   const m = { ts: Date.now(), list: all.sort((a, b) => b.mcap - a.mcap).slice(0, n) };
   await db.set('cap-rwa', m);
   return m;
+}
+
+// Ідентифікатори стейблкоїнів — щоб не показувати їх у топ-100 Cap. Оновлюються раз на добу.
+export async function loadStableIds() {
+  const cached = await db.get('stable');
+  if (cached?.ids?.length && Date.now() - cached.ts < 24 * 3600e3) return cached;
+  try {
+    const r = await getJSON(`${API}/coins/markets?vs_currency=usd&category=stablecoins&order=market_cap_desc&per_page=250&page=1`);
+    const m = { ts: Date.now(), ids: r.map((c) => c.id) };
+    await db.set('stable', m);
+    return m;
+  } catch (e) {
+    if (cached?.ids?.length) return cached;
+    throw e;
+  }
 }
 
 export async function search(query) {

@@ -9,7 +9,7 @@ import { esc, usd, usdShort, pct, qty as fq, dt, time, tone, parseNum, toLocalIn
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -624,7 +624,44 @@ function tabsHtml(tab) {
 
 // ---------------- Cap: топ монет за капіталізацією ----------------
 
-const capKnown = (id) => !!(S.market?.byId?.[id]?.rank <= 100 || capRwaItem(id));
+const capKnown = (id) => !!(S.market?.byId?.[id] || capRwaItem(id));
+
+// Топ-100 криптовалют без стейблкоїнів, токенізованих фондів і активів (золото, акції)
+// та без обгорнутих і стейкінгових копій (wBTC, stETH), що коштують як основна монета.
+function cryptoTop100() {
+  // Довідники завантажуються у фоні; після невдачі (ліміт CoinGecko) — повтор не раніше ніж за 70 с
+  const lazy = (key, load) => {
+    const st = (S.capDirs ??= {})[key] ??= { busy: false, failedAt: 0 };
+    if (S[key] || st.busy || Date.now() - st.failedAt < 70_000) return;
+    st.busy = true;
+    load().then((m) => { S[key] = m; if (location.hash === '#/cap') renderView(); })
+      .catch(() => { st.failedAt = Date.now(); setTimeout(() => location.hash === '#/cap' && renderView(), 71_000); })
+      .finally(() => (st.busy = false));
+  };
+  lazy('rwa', P.loadRwa);
+  lazy('stableIds', P.loadStableIds);
+  const rwaIds = new Set([...(S.rwa?.list || []).map((c) => c.id), ...(S.stableIds?.ids || [])]);
+  const stableLike = (c) => {
+    const sp = c.spark;
+    if (!sp?.length) return c.price > 0.9 && c.price < 1.3;
+    const hi = Math.max(...sp), lo = Math.min(...sp);
+    return hi > 0 && (hi - lo) / hi < 0.015; // за тиждень ціна майже не рухалась
+  };
+  const kept = [];
+  const variant = (c) => {
+    const sym = String(c.symbol).toLowerCase();
+    return kept.some((k) => {
+      const ks = String(k.symbol).toLowerCase();
+      return ks.length >= 3 && sym !== ks && sym.includes(ks) && k.price > 0 && Math.abs(c.price / k.price - 1) < 0.12;
+    });
+  };
+  for (const c of (S.market?.list || []).filter((x) => x.rank).sort((a, b) => a.rank - b.rank)) {
+    if (kept.length >= 100) break;
+    if (rwaIds.has(c.id) || stableLike(c) || variant(c)) continue;
+    kept.push(c);
+  }
+  return kept;
+}
 
 function ensureCapRwa() {
   if (S.capRwaBusy) return;
@@ -651,8 +688,7 @@ function ensureCapRwa() {
 function capView(seg) {
   const rwa = seg === 'rwa';
   if (rwa) ensureCapRwa();
-  const list = rwa ? (S.capRwa?.list || [])
-    : (S.market?.list || []).filter((c) => c.rank).sort((a, b) => a.rank - b.rank).slice(0, 100);
+  const list = rwa ? (S.capRwa?.list || []) : cryptoTop100();
   const KIND = { gold: 'Золото', stock: 'Акція' };
   const rows = list.map((c, i) => {
     const id = c.id;
@@ -662,7 +698,7 @@ function capView(seg) {
     const sub = [m.symbol, rwa ? KIND[c.kind] : null, held ? 'у портфелі' : null].filter(Boolean).join(' · ');
     return `<div class="cap-item">
       <a class="cap-row" href="#/coin/${encodeURIComponent(id)}">
-        <span class="cap-n">${rwa ? i + 1 : c.rank}</span>
+        <span class="cap-n">${i + 1}</span>
         ${logo(id, 'md', m)}
         <div class="wr-name"><b>${esc(m.name)}</b><span class="muted">${esc(sub)}</span><span class="muted cap-mcap-mob">${usdShort(c.mcap)}</span></div>
         <div class="cap-spark">${spark}</div>
@@ -689,7 +725,8 @@ function capView(seg) {
     ${list.length ? `<div class="cap-list card">
       <div class="cap-head"><span>#</span><span></span><span>Назва</span><span>7 днів</span><span></span><span>Ціна · 24г</span><span>Капіталізація</span></div>
       ${rows}</div>
-      ${rwa ? '<p class="muted small cap-note">Токенізоване золото й акції з категорій CoinGecko, разом за капіталізацією. Ціни токенів можуть трохи відрізнятися від біржових.</p>' : ''}`
+      <p class="muted small cap-note">${rwa ? 'Токенізоване золото й акції з категорій CoinGecko, разом за капіталізацією. Ціни токенів можуть трохи відрізнятися від біржових.'
+        : 'Без стейблкоїнів, токенізованих фондів, золота й акцій, а також без обгорнутих і стейкінгових копій монет (wBTC, stETH тощо).'}</p>`
     : `<div class="card pad muted">${rwa && !S.capRwaError ? '<span class="spinner sm"></span> Завантажуємо список…' : 'Список поки недоступний'}</div>`}`;
 }
 
