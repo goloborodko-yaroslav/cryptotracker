@@ -112,7 +112,8 @@ export function mergeStates(local, remote) {
   };
 }
 
-// Watchlist: { id: коли додано }, видалення — { id: коли видалено }; новіша дія перемагає
+// Watchlist: { id: коли додано }, видалення — { id: коли видалено }; новіша дія перемагає.
+// watchOrder: { ids: [...], at } — порядок, який задав користувач
 function mergeWatch(local, remote) {
   const watchDel = { ...(remote.watchDel || {}) };
   for (const [id, ts] of Object.entries(local.watchDel || {})) watchDel[id] = Math.max(watchDel[id] || 0, ts);
@@ -121,7 +122,10 @@ function mergeWatch(local, remote) {
     for (const [id, ts] of Object.entries(src)) watch[id] = Math.max(watch[id] || 0, ts);
   }
   for (const id of Object.keys(watch)) if ((watchDel[id] || 0) >= watch[id]) delete watch[id];
-  return { watch, watchDel };
+  // Порядок: перемагає новіша перестановка
+  const lo = local.watchOrder, ro = remote.watchOrder;
+  const watchOrder = (lo?.at || 0) >= (ro?.at || 0) ? lo : ro;
+  return { watch, watchDel, ...(watchOrder ? { watchOrder } : {}) };
 }
 
 function digest(s) {
@@ -130,7 +134,7 @@ function digest(s) {
   const coins = Object.keys(s.coins || {}).sort();
   const watch = Object.keys(s.watch || {}).sort().map((k) => [k, s.watch[k]]);
   const wdel = Object.keys(s.watchDel || {}).sort().map((k) => [k, s.watchDel[k]]);
-  return JSON.stringify([txs, del, coins, watch, wdel]);
+  return JSON.stringify([txs, del, coins, watch, wdel, s.watchOrder?.at || 0]);
 }
 
 export const sameContent = (a, b) => digest(a) === digest(b);

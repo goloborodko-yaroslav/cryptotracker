@@ -9,7 +9,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.8.2';
+const APP_VERSION = '1.9.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -265,7 +265,13 @@ document.addEventListener('error', (e) => {
 }, true);
 
 const heldIds = () => [...new Set(S.state.txs.map((t) => t.coinId))];
-const watchIds = () => Object.entries(S.state.watch || {}).sort((a, b) => a[1] - b[1]).map(([id]) => id);
+// Порядок Watchlist: спершу як переставив користувач (watchOrder), нові монети — в кінці за часом додавання
+function watchIds() {
+  const pos = new Map((S.state.watchOrder?.ids || []).map((id, i) => [id, i]));
+  return Object.entries(S.state.watch || {})
+    .sort((a, b) => (pos.get(a[0]) ?? 1e9) - (pos.get(b[0]) ?? 1e9) || a[1] - b[1])
+    .map(([id]) => id);
+}
 const isWatched = (id) => !!S.state.watch?.[id];
 const trackedIds = () => [...new Set([...heldIds(), ...watchIds()])];
 
@@ -598,6 +604,7 @@ function route() {
 function renderView() {
   const view = $('#view');
   if (!view || !S.state) return;
+  if (S.dragging) { S.renderPending = true; return; } // не перемальовуємо список під пальцем
   const m = location.hash.match(/^#\/coin\/(.+)$/);
   if (m) { const fab = $('.fab'); if (fab) fab.dataset.act = 'add-tx'; view.innerHTML = coinView(decodeURIComponent(m[1])); return; }
   const watch = location.hash === '#/watch';
@@ -631,7 +638,8 @@ function watchView() {
     const c = meta(id), q = quote(id);
     const held = S.state.txs.some((t) => t.coinId === id);
     const spark = q?.spark ? sparkline(q.spark, { w: 160, h: 44, color: (q.chg7 ?? 0) >= 0 ? UP : DOWN }) : '';
-    return `<div class="watch-item">
+    return `<div class="watch-item" data-id="${esc(id)}">
+      ${ids.length > 1 ? `<button class="drag-handle" type="button" title="Перетягніть, щоб змінити порядок" aria-label="Змінити порядок ${esc(c.name)} (стрілки вгору й вниз)">${icon('grip', 18)}</button>` : ''}
       <a class="watch-row" href="#/coin/${encodeURIComponent(id)}">
         ${logo(id, 'lg', c)}
         <div class="wr-name"><b>${esc(c.name)}</b><span class="muted">${esc(c.symbol)}${q?.rank ? ' · #' + q.rank : ''}${held ? ' · у портфелі' : ''}</span></div>
@@ -646,6 +654,84 @@ function watchView() {
     <div class="watch-list card">${rows}</div>
     <button class="btn watch-add-btn" data-act="watch-add">${icon('plus', 18)} Додати монету</button>`;
 }
+
+// ---------- Перестановка Watchlist ----------
+
+function saveWatchOrder(list) {
+  const ids = [...list.querySelectorAll('.watch-item')].map((el) => el.dataset.id);
+  const before = watchIds();
+  if (ids.join() === before.join()) return;
+  S.state.watchOrder = { ids, at: Date.now() };
+  save();
+}
+
+// Перетягування за ручку: мишею, пальцем або пером (pointer events)
+document.addEventListener('pointerdown', (e) => {
+  const handle = e.target.closest('.drag-handle');
+  if (!handle || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  const item = handle.closest('.watch-item');
+  const list = item.parentElement;
+  e.preventDefault();
+  try { handle.setPointerCapture(e.pointerId); } catch { /* синтетичні події */ }
+  const grab = e.clientY - item.getBoundingClientRect().top;
+  let y = e.clientY;
+  S.dragging = true;
+  item.classList.add('dragging');
+  list.classList.add('sorting');
+
+  const mid = (el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; };
+  const layout = () => {
+    item.style.transform = '';
+    // Міняємось місцями з сусідом, щойно центр рядка перетнув його середину
+    const center = y - grab + item.offsetHeight / 2;
+    for (let guard = 0; guard < 50; guard++) {
+      const prev = item.previousElementSibling, next = item.nextElementSibling;
+      if (prev && center < mid(prev)) list.insertBefore(item, prev);
+      else if (next && center > mid(next)) list.insertBefore(next, item);
+      else break;
+    }
+    item.style.transform = `translateY(${y - grab - item.getBoundingClientRect().top}px)`;
+  };
+  // Автопрокрутка біля країв екрана
+  const scroller = setInterval(() => {
+    const edge = 70;
+    const d = y < edge ? -10 : y > innerHeight - edge ? 10 : 0;
+    if (d) { scrollBy(0, d); layout(); }
+  }, 16);
+  const pid = e.pointerId;
+  const move = (ev) => { if (ev.pointerId !== pid) return; ev.preventDefault(); y = ev.clientY; layout(); };
+  let done = false;
+  const end = (ev) => {
+    if (done || (ev && ev.pointerId !== pid)) return;
+    done = true;
+    clearInterval(scroller);
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', end);
+    removeEventListener('pointercancel', end);
+    item.style.transform = '';
+    item.classList.remove('dragging');
+    list.classList.remove('sorting');
+    S.dragging = false;
+    saveWatchOrder(list);
+    if (S.renderPending) { S.renderPending = false; renderView(); }
+  };
+  addEventListener('pointermove', move, { passive: false });
+  addEventListener('pointerup', end);
+  addEventListener('pointercancel', end);
+});
+
+// Клавіатура: стрілки вгору/вниз на ручці
+document.addEventListener('keydown', (e) => {
+  const handle = e.target.closest?.('.drag-handle');
+  if (!handle || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+  e.preventDefault();
+  const item = handle.closest('.watch-item'), list = item.parentElement;
+  if (e.key === 'ArrowUp' && item.previousElementSibling) list.insertBefore(item, item.previousElementSibling);
+  else if (e.key === 'ArrowDown' && item.nextElementSibling) list.insertBefore(item.nextElementSibling, item);
+  else return;
+  handle.focus();
+  saveWatchOrder(list);
+});
 
 function toggleWatch(id, metaHint) {
   if (isWatched(id)) {

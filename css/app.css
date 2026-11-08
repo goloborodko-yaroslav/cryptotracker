@@ -444,6 +444,16 @@ a.legend-row:hover { background: var(--surface-2); }
 }
 .tabs + .section-head { margin-top: 6px; }
 
+/* Перестановка Watchlist */
+.drag-handle { flex: none; display: grid; place-items: center; width: 30px; height: 44px; margin-left: 2px; border: 0; border-radius: 10px; background: none; color: var(--faint); cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.drag-handle:hover, .drag-handle:focus-visible { color: var(--text); background: var(--surface-2); }
+.drag-handle:active { cursor: grabbing; }
+.watch-list.sorting { -webkit-user-select: none; user-select: none; }
+.watch-item.dragging { position: relative; z-index: 5; background: #161616; border-radius: 16px; border-top-color: transparent; box-shadow: 0 14px 36px rgba(0, 0, 0, .7), 0 0 0 1px var(--border-2); }
+.watch-item.dragging + .watch-item { border-top-color: transparent; }
+.watch-list.sorting .watch-row { pointer-events: none; }
+@media (max-width: 560px) { .drag-handle { width: 26px; margin-left: 0; } }
+
 /* Чорно-білі логотипи: поки перемальовується (або якщо не вдалося) — сірий оригінал */
 .logo.mono-gs { filter: grayscale(1) contrast(1.1); }
 
