@@ -8,7 +8,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -217,12 +217,15 @@ function meta(id) {
 
 // Власні логотипи, що замінюють картинки CoinGecko
 const LOCAL_LOGOS = { dogecoin: 'icons/coins/dogecoin.svg' };
+// Намальовані вручну чорно-білі логотипи — там, де автоматичне перемальовування виходить погано
+const LOCAL_MONO = { monero: 'icons/coins/monero.svg' };
 
 function logo(id, size = 'xl', c = meta(id)) {
   const src = LOCAL_LOGOS[id] || c.image;
   if (!src) return fallbackLogo(c.symbol, size);
   const attrs = `alt="" decoding="async" referrerpolicy="no-referrer" data-sym="${esc(c.symbol)}"`;
   if (Mono.isEnabled()) {
+    if (LOCAL_MONO[id]) return `<img class="logo ${size}" src="${LOCAL_MONO[id]}" ${attrs}>`;
     const mono = Mono.cached(src);
     if (mono) return `<img class="logo ${size}" src="${mono}" ${attrs}>`;
     // Поки перемальовується — сіра версія оригіналу; null — перемалювати не вдалося

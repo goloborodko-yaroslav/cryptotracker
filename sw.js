@@ -1,10 +1,10 @@
 // Service worker: застосунок працює офлайн, логотипи монет кешуються.
 // Запити до API цін не кешуються. Зашифровані дані сюди не потрапляють.
-const VERSION = 'ct-1.7.0';
+const VERSION = 'ct-1.7.1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/crypto.js', 'js/store.js', 'js/calc.js', 'js/prices.js', 'js/format.js', 'js/charts.js', 'js/icons.js', 'js/sync.js', 'js/mono.js',
-  'vendor/argon2.umd.min.js', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/coins/dogecoin.svg',
+  'vendor/argon2.umd.min.js', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/coins/dogecoin.svg', 'icons/coins/monero.svg',
 ];
 const IMG_HOSTS = ['coin-images.coingecko.com', 'assets.coingecko.com'];
 
