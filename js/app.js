@@ -5,11 +5,11 @@ import * as P from './prices.js';
 import * as Sync from './sync.js';
 import * as Mono from './mono.js';
 import * as Bio from './bio.js';
-import { esc, usd, usdShort, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from './format.js';
+import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from './format.js';
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.8.1';
+const APP_VERSION = '1.8.2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -199,20 +199,15 @@ function checkNewPassword(pw, pw2) {
 
 // ---------------- Монети ----------------
 
-const capRwaItem = (id) => S.capRwa?.list?.find((c) => c.id === id) || null;
-const rwaDirItem = (id) => S.rwa?.list?.find((c) => c.id === id) || null;
-
 function quote(id) {
   const m = S.market?.byId?.[id];
   if (m && m.price != null) return m;
-  const p = S.state?.prices?.[id], r = capRwaItem(id);
-  if (p && r) return (p.ts || 0) >= S.capRwa.ts ? p : r;
-  return p || r || null;
+  return S.state?.prices?.[id] || null;
 }
 
 function meta(id) {
   const saved = S.state?.coins?.[id] || {};
-  const m = S.market?.byId?.[id] || capRwaItem(id) || rwaDirItem(id) || {};
+  const m = S.market?.byId?.[id] || {};
   return {
     id,
     name: saved.name || m.name || id,
@@ -545,7 +540,7 @@ function enterApp() {
   S.state.watch ??= {};
   S.state.watchDel ??= {};
   P.setApiKey(S.state.cgKey);
-  if (!S.capRwa) P.loadCachedCapRwa().then((c) => { if (c?.list && !S.capRwa) S.capRwa = c; }).catch(() => {});
+  db.del('cap-rwa').catch(() => {}); db.del('stable').catch(() => {}); // кеш вкладки Cap, яку прибрали
   Mono.setEnabled(!S.state.settings.colorLogos);
   if (S.pendingSync) {
     S.state.sync = { ...S.pendingSync, since: Date.now() };
@@ -605,129 +600,18 @@ function renderView() {
   if (!view || !S.state) return;
   const m = location.hash.match(/^#\/coin\/(.+)$/);
   if (m) { const fab = $('.fab'); if (fab) fab.dataset.act = 'add-tx'; view.innerHTML = coinView(decodeURIComponent(m[1])); return; }
-  const h = location.hash;
-  const tab = h === '#/watch' ? 'watch' : h.startsWith('#/cap') ? 'cap' : 'portfolio';
-  const watch = tab === 'watch';
-  view.innerHTML = tabsHtml(tab) + (watch ? watchView() : tab === 'cap' ? capView(h === '#/cap/rwa' ? 'rwa' : 'crypto') : dashboardView());
+  const watch = location.hash === '#/watch';
+  view.innerHTML = tabsHtml(watch) + (watch ? watchView() : dashboardView());
   const fab = $('.fab');
   if (fab) { fab.dataset.act = watch ? 'watch-add' : 'add-tx'; fab.setAttribute('aria-label', watch ? 'Додати до Watchlist' : 'Додати транзакцію'); }
 }
 
-function tabsHtml(tab) {
+function tabsHtml(watch) {
   const n = watchIds().length;
   return `<nav class="tabs" aria-label="Розділи">
-    <a href="#/" class="${tab === 'portfolio' ? 'on' : ''}">Портфель</a>
-    <a href="#/watch" class="${tab === 'watch' ? 'on' : ''}">${icon('star', 16)} Watchlist${n ? ` <span class="count">${n}</span>` : ''}</a>
-    <a href="#/cap" class="${tab === 'cap' ? 'on' : ''}">${icon('bars', 16)} Cap</a>
+    <a href="#/" class="${watch ? '' : 'on'}">Портфель</a>
+    <a href="#/watch" class="${watch ? 'on' : ''}">${icon('star', 16)} Watchlist${n ? ` <span class="count">${n}</span>` : ''}</a>
   </nav>`;
-}
-
-// ---------------- Cap: топ монет за капіталізацією ----------------
-
-const capKnown = (id) => !!(S.market?.byId?.[id] || capRwaItem(id));
-
-// Топ-100 криптовалют без стейблкоїнів, токенізованих фондів і активів (золото, акції)
-// та без обгорнутих і стейкінгових копій (wBTC, stETH), що коштують як основна монета.
-function cryptoTop100() {
-  // Довідники завантажуються у фоні; після невдачі (ліміт CoinGecko) — повтор не раніше ніж за 70 с
-  const lazy = (key, load) => {
-    const st = (S.capDirs ??= {})[key] ??= { busy: false, failedAt: 0 };
-    if (S[key] || st.busy || Date.now() - st.failedAt < 70_000) return;
-    st.busy = true;
-    load().then((m) => { S[key] = m; if (location.hash === '#/cap') renderView(); })
-      .catch(() => { st.failedAt = Date.now(); setTimeout(() => location.hash === '#/cap' && renderView(), 71_000); })
-      .finally(() => (st.busy = false));
-  };
-  lazy('rwa', P.loadRwa);
-  lazy('stableIds', P.loadStableIds);
-  const rwaIds = new Set([...(S.rwa?.list || []).map((c) => c.id), ...(S.stableIds?.ids || [])]);
-  const stableLike = (c) => {
-    const sp = c.spark;
-    if (!sp?.length) return c.price > 0.9 && c.price < 1.3;
-    const hi = Math.max(...sp), lo = Math.min(...sp);
-    return hi > 0 && (hi - lo) / hi < 0.015; // за тиждень ціна майже не рухалась
-  };
-  const kept = [];
-  const variant = (c) => {
-    const sym = String(c.symbol).toLowerCase();
-    return kept.some((k) => {
-      const ks = String(k.symbol).toLowerCase();
-      return ks.length >= 3 && sym !== ks && sym.includes(ks) && k.price > 0 && Math.abs(c.price / k.price - 1) < 0.12;
-    });
-  };
-  for (const c of (S.market?.list || []).filter((x) => x.rank).sort((a, b) => a.rank - b.rank)) {
-    if (kept.length >= 100) break;
-    if (rwaIds.has(c.id) || stableLike(c) || variant(c)) continue;
-    kept.push(c);
-  }
-  return kept;
-}
-
-function ensureCapRwa() {
-  if (S.capRwaBusy) return;
-  if (S.capRwa && Date.now() - S.capRwa.ts < 300_000) return;
-  S.capRwaBusy = true;
-  (async () => {
-    try {
-      if (!S.capRwa) {
-        const c = await P.loadCachedCapRwa();
-        if (c?.list) { S.capRwa = c; if (location.hash === '#/cap/rwa') renderView(); }
-        if (S.capRwa && Date.now() - S.capRwa.ts < 300_000) return;
-      }
-      S.capRwa = await P.fetchCapRwa(20);
-      S.capRwaError = null;
-    } catch (e) {
-      S.capRwaError = e.code === 429 ? `CoinGecko обмежив запити — спробуйте через ${P.blockedFor() || 60} с` : 'Не вдалося завантажити список RWA';
-    } finally {
-      S.capRwaBusy = false;
-      if (location.hash === '#/cap/rwa') renderView();
-    }
-  })();
-}
-
-function capView(seg) {
-  const rwa = seg === 'rwa';
-  if (rwa) ensureCapRwa();
-  const list = rwa ? (S.capRwa?.list || []) : cryptoTop100();
-  const KIND = { gold: 'Золото', stock: 'Акція' };
-  const rows = list.map((c, i) => {
-    const id = c.id;
-    const m = meta(id);
-    const on = isWatched(id), held = S.state.txs.some((t) => t.coinId === id);
-    const spark = c.spark ? sparkline(c.spark, { w: 120, h: 36, color: (c.chg7 ?? 0) >= 0 ? UP : DOWN }) : '';
-    const sub = [m.symbol, rwa ? KIND[c.kind] : null, held ? 'у портфелі' : null].filter(Boolean).join(' · ');
-    return `<div class="cap-item">
-      <a class="cap-row" href="#/coin/${encodeURIComponent(id)}">
-        <span class="cap-n">${i + 1}</span>
-        ${logo(id, 'md', m)}
-        <div class="wr-name"><b>${esc(m.name)}</b><span class="muted">${esc(sub)}</span><span class="muted cap-mcap-mob">${usdShort(c.mcap)}</span></div>
-        <div class="cap-spark">${spark}</div>
-        <div class="cap-7d ${tone(c.chg7)}">${pct(c.chg7)}</div>
-        <div class="wr-price"><b>${usd(c.price)}</b>${c.chg24 != null ? `<span class="chip ${tone(c.chg24)}">${pct(c.chg24)}</span>` : ''}</div>
-        <div class="cap-mcap">${usdShort(c.mcap)}</div>
-      </a>
-      <button class="icon-btn sm star ${on ? 'on' : ''}" data-act="watch-toggle" data-id="${esc(id)}" title="${on ? 'Прибрати з Watchlist' : 'Додати до Watchlist'}" aria-label="${on ? 'Прибрати з Watchlist' : 'Додати до Watchlist'}">${icon('star', 18)}</button>
-    </div>`;
-  }).join('');
-  let status;
-  if (rwa) {
-    status = S.capRwaError ? `<span class="status warn">${icon('alert', 14)} ${esc(S.capRwaError)}</span>`
-      : S.capRwa ? `<span class="status"><i class="dot"></i> CoinGecko · ${time(S.capRwa.ts)}</span>`
-      : `<span class="status"><span class="spinner sm"></span> Завантажуємо…</span>`;
-    status = `<span class="status-line">${status}</span>`;
-  } else status = pricesLine();
-  return `
-    <div class="cap-seg" role="tablist">
-      <a href="#/cap" class="${rwa ? '' : 'on'}">Криптовалюти · Топ 100</a>
-      <a href="#/cap/rwa" class="${rwa ? 'on' : ''}">RWA · Топ 20</a>
-    </div>
-    <div class="section-head"><h2>${rwa ? 'Золото й акції' : 'За капіталізацією'}</h2>${status}</div>
-    ${list.length ? `<div class="cap-list card">
-      <div class="cap-head"><span>#</span><span></span><span>Назва</span><span>7 днів</span><span></span><span>Ціна · 24г</span><span>Капіталізація</span></div>
-      ${rows}</div>
-      <p class="muted small cap-note">${rwa ? 'Токенізоване золото й акції з категорій CoinGecko, разом за капіталізацією. Ціни токенів можуть трохи відрізнятися від біржових.'
-        : 'Без стейблкоїнів, токенізованих фондів, золота й акцій, а також без обгорнутих і стейкінгових копій монет (wBTC, stETH тощо).'}</p>`
-    : `<div class="card pad muted">${rwa && !S.capRwaError ? '<span class="spinner sm"></span> Завантажуємо список…' : 'Список поки недоступний'}</div>`}`;
 }
 
 // ---------------- Watchlist ----------------
@@ -769,7 +653,7 @@ function toggleWatch(id, metaHint) {
     S.state.watchDel[id] = Date.now();
     toast('Прибрано з Watchlist');
     const onItsPage = location.hash === `#/coin/${encodeURIComponent(id)}`;
-    if (onItsPage && !S.state.txs.some((t) => t.coinId === id) && !capKnown(id)) location.hash = '#/watch';
+    if (onItsPage && !S.state.txs.some((t) => t.coinId === id)) location.hash = '#/watch';
   } else {
     S.state.watch[id] = Date.now();
     if (metaHint && !S.state.coins[id]) S.state.coins[id] = metaHint;
@@ -954,7 +838,7 @@ function coinCard(h) {
 
 function coinView(id) {
   const txs = S.state.txs.filter((t) => t.coinId === id);
-  if (!txs.length && !isWatched(id) && !capKnown(id)) { setTimeout(() => (location.hash = '#/'), 0); return ''; }
+  if (!txs.length && !isWatched(id)) { setTimeout(() => (location.hash = '#/'), 0); return ''; }
   if (!txs.length) return watchCoinView(id);
   const c = meta(id);
   const k = computeCoin(txs);
@@ -1026,14 +910,10 @@ function coinHero(id, c, q) {
 }
 
 function watchCoinView(id) {
-  const w = isWatched(id);
-  const back = w ? ['#/watch', 'Watchlist'] : [capRwaItem(id) ? '#/cap/rwa' : '#/cap', 'Cap'];
-  const q = quote(id);
   return `
-    <a class="back" href="${back[0]}">${icon('back', 18)} ${back[1]}</a>
-    ${coinHero(id, meta(id), q)}
-    ${q?.mcap ? `<div class="tiles"><div class="tile card"><span class="label">Капіталізація</span><span>${usdShort(q.mcap)}</span></div></div>` : ''}
-    <div class="note-box muted">${icon('star', 16)} Цієї монети немає у вашому портфелі. ${w ? 'Натисніть «Транзакція», коли купите її.' : 'Додайте її до Watchlist зірочкою або натисніть «Транзакція», коли купите.'}</div>`;
+    <a class="back" href="#/watch">${icon('back', 18)} Watchlist</a>
+    ${coinHero(id, meta(id), quote(id))}
+    <div class="note-box muted">${icon('star', 16)} Цієї монети немає у вашому портфелі. Натисніть «Транзакція», коли купите її.</div>`;
 }
 
 // ---------------- Модальні вікна ----------------
