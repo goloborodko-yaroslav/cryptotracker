@@ -443,3 +443,6 @@ a.legend-row:hover { background: var(--surface-2); }
   .wr-spark { display: none; }
 }
 .tabs + .section-head { margin-top: 6px; }
+
+/* Чорно-білі логотипи: поки перемальовується (або якщо не вдалося) — сірий оригінал */
+.logo.mono-gs { filter: grayscale(1) contrast(1.1); }

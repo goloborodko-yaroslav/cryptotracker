@@ -3,11 +3,12 @@ import * as V from './crypto.js';
 import { computePortfolio, computeCoin, sortTxs, TX_TYPES } from './calc.js';
 import * as P from './prices.js';
 import * as Sync from './sync.js';
+import * as Mono from './mono.js';
 import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from './format.js';
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -219,9 +220,33 @@ const LOCAL_LOGOS = { dogecoin: 'icons/coins/dogecoin.svg' };
 
 function logo(id, size = 'xl', c = meta(id)) {
   const src = LOCAL_LOGOS[id] || c.image;
-  if (src) return `<img class="logo ${size}" src="${esc(src)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-sym="${esc(c.symbol)}">`;
-  return fallbackLogo(c.symbol, size);
+  if (!src) return fallbackLogo(c.symbol, size);
+  const attrs = `alt="" decoding="async" referrerpolicy="no-referrer" data-sym="${esc(c.symbol)}"`;
+  if (Mono.isEnabled()) {
+    const mono = Mono.cached(src);
+    if (mono) return `<img class="logo ${size}" src="${mono}" ${attrs}>`;
+    // Поки перемальовується — сіра версія оригіналу; null — перемалювати не вдалося
+    return `<img class="logo ${size} mono-gs" src="${esc(src)}" ${mono === null ? '' : `data-mono="${esc(src)}"`} loading="lazy" ${attrs}>`;
+  }
+  return `<img class="logo ${size}" src="${esc(src)}" loading="lazy" ${attrs}>`;
 }
+
+// Чорно-білі логотипи: щойно <img> з'являється на сторінці, підміняємо його перемальованою версією
+function upgradeLogos(el) {
+  const imgs = el.matches('img[data-mono]') ? [el] : el.querySelectorAll('img[data-mono]');
+  for (const img of imgs) {
+    const src = img.dataset.mono;
+    img.removeAttribute('data-mono');
+    Mono.process(src).then((url) => {
+      if (!url || !img.isConnected) return;
+      img.src = url;
+      img.classList.remove('mono-gs');
+    });
+  }
+}
+new MutationObserver((list) => {
+  for (const m of list) for (const n of m.addedNodes) if (n.nodeType === 1) upgradeLogos(n);
+}).observe(document.body, { childList: true, subtree: true });
 function fallbackLogo(sym, size) {
   return `<span class="logo ${size} logo-fb">${esc(String(sym).slice(0, 4))}</span>`;
 }
@@ -477,6 +502,7 @@ function enterApp() {
   S.state.watch ??= {};
   S.state.watchDel ??= {};
   P.setApiKey(S.state.cgKey);
+  Mono.setEnabled(!S.state.settings.colorLogos);
   if (S.pendingSync) {
     S.state.sync = { ...S.pendingSync, since: Date.now() };
     S.pendingSync = null;
@@ -1142,6 +1168,15 @@ function openSettings() {
       <button class="set-row btn-row" data-act="change-pw"><span>Змінити головний пароль</span>${icon('chevron', 18)}</button>
       <button class="set-row btn-row" data-act="new-rk"><span>Створити новий ключ відновлення</span>${icon('chevron', 18)}</button>
     </div>
+    <div class="set-group">
+      <h3>${icon('eye', 16)} Вигляд</h3>
+      <label class="set-row"><span>Логотипи монет</span>
+        <select id="logo-style">
+          <option value="mono" ${s.colorLogos ? '' : 'selected'}>Чорно-білі</option>
+          <option value="color" ${s.colorLogos ? 'selected' : ''}>Кольорові</option>
+        </select>
+      </label>
+    </div>
     <div class="set-group" id="cg-group">${cgGroupHtml()}</div>
     <div class="set-group" id="sync-group">${syncGroupHtml()}</div>
     <div class="set-group">
@@ -1166,6 +1201,13 @@ function openSettings() {
   $('#autolock').addEventListener('change', (e) => {
     s.autoLockMin = +e.target.value;
     save();
+    toast('Збережено');
+  });
+  $('#logo-style').addEventListener('change', (e) => {
+    s.colorLogos = e.target.value === 'color';
+    Mono.setEnabled(!s.colorLogos);
+    save({ sync: false });
+    renderView();
     toast('Збережено');
   });
   $('#import-file').addEventListener('change', (e) => importBackup(e.target.files[0]));

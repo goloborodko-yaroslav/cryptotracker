@@ -1,9 +1,9 @@
 // Service worker: застосунок працює офлайн, логотипи монет кешуються.
 // Запити до API цін не кешуються. Зашифровані дані сюди не потрапляють.
-const VERSION = 'ct-1.6.0';
+const VERSION = 'ct-1.7.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/crypto.js', 'js/store.js', 'js/calc.js', 'js/prices.js', 'js/format.js', 'js/charts.js', 'js/icons.js', 'js/sync.js',
+  'js/app.js', 'js/crypto.js', 'js/store.js', 'js/calc.js', 'js/prices.js', 'js/format.js', 'js/charts.js', 'js/icons.js', 'js/sync.js', 'js/mono.js',
   'vendor/argon2.umd.min.js', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/coins/dogecoin.svg',
 ];
 const IMG_HOSTS = ['coin-images.coingecko.com', 'assets.coingecko.com'];
@@ -31,7 +31,8 @@ self.addEventListener('fetch', (e) => {
     e.respondWith((async () => {
       const cache = await caches.open('ct-logos');
       const hit = await cache.match(e.request, { ignoreSearch: true });
-      if (hit) return hit;
+      // Непрозора (no-cors) копія не годиться для CORS-запиту чорно-білого перемальовування
+      if (hit && !(hit.type === 'opaque' && e.request.mode === 'cors')) return hit;
       const res = await fetch(e.request);
       if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone());
       return res;
