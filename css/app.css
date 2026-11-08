@@ -405,3 +405,41 @@ a.legend-row:hover { background: var(--surface-2); }
 .price-hint #price-hint-text { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
 .price-hint #price-hint-text .ico, .price-hint #price-hint-text .spinner { display: inline-block; vertical-align: -3px; margin-right: 4px; }
 .hint-btn { flex: none; background: none; border: 0; padding: 4px 0; color: var(--text); font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+
+/* ---------- Вкладки й Watchlist ---------- */
+.tabs { display: inline-flex; gap: 4px; padding: 4px; margin-bottom: 18px; border-radius: 14px; background: rgba(255, 255, 255, .04); border: 1px solid var(--border); }
+.tabs a { display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; border-radius: 10px; font-weight: 650; font-size: 14.5px; color: var(--muted); }
+.tabs a .ico { display: inline-block; }
+.tabs a.on { background: #fff; color: #000; }
+.tabs .count { font-size: 12px; padding: 1px 7px; border-radius: 999px; background: rgba(255, 255, 255, .12); color: inherit; }
+.tabs a.on .count { background: rgba(0, 0, 0, .12); }
+.watch-list { padding: 6px; }
+.watch-item { display: flex; align-items: center; gap: 4px; border-top: 1px solid var(--border); }
+.watch-item:first-child { border-top: 0; }
+.watch-row { flex: 1; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) 160px auto; align-items: center; gap: 16px; padding: 12px 10px; border-radius: 16px; }
+.watch-row:hover { background: var(--surface-2); }
+.wr-name { display: flex; flex-direction: column; min-width: 0; }
+.wr-name b { font-weight: 650; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wr-name span { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wr-spark { position: relative; height: 44px; }
+.wr-7d { position: absolute; right: 0; top: -14px; font-size: 11px; font-weight: 600; }
+.wr-price { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-variant-numeric: tabular-nums; }
+.wr-price b { font-size: 16px; font-weight: 650; }
+.wr-price .chip { font-size: 12px; padding: 3px 8px; }
+.star { color: var(--faint); }
+.star.on { color: #fff; }
+.star.on .ico { fill: currentColor; }
+.watch-add-btn { margin-top: 14px; }
+.ch-actions { display: flex; align-items: center; gap: 6px; }
+.note-box { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 14px 16px; border-radius: 16px; background: rgba(255, 255, 255, .04); border: 1px solid var(--border); font-size: 14px; }
+.empty-star { width: 96px; height: 96px; border-radius: 28px; display: grid; place-items: center; background: #fff; color: #000; margin-bottom: 10px; box-shadow: 0 20px 44px rgba(255, 255, 255, .15); }
+.empty-star .ico { fill: currentColor; }
+.pick-list.tall { max-height: 60vh; }
+.pick-item .pi-star { color: var(--faint); display: grid; place-items: center; width: 28px; }
+.pick-item.on .pi-star { color: #fff; }
+.pick-item.on .pi-star .ico { fill: currentColor; }
+@media (max-width: 560px) {
+  .watch-row { grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; }
+  .wr-spark { display: none; }
+}
+.tabs + .section-head { margin-top: 6px; }

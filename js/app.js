@@ -7,7 +7,7 @@ import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.6.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -20,7 +20,7 @@ const S = {
 };
 
 const newState = () => ({
-  v: 1, txs: [], coins: {}, prices: {},
+  v: 1, txs: [], coins: {}, prices: {}, watch: {}, watchDel: {},
   settings: { autoLockMin: 5, hideValues: false },
   createdAt: Date.now(),
 });
@@ -236,6 +236,9 @@ document.addEventListener('error', (e) => {
 }, true);
 
 const heldIds = () => [...new Set(S.state.txs.map((t) => t.coinId))];
+const watchIds = () => Object.entries(S.state.watch || {}).sort((a, b) => a[1] - b[1]).map(([id]) => id);
+const isWatched = (id) => !!S.state.watch?.[id];
+const trackedIds = () => [...new Set([...heldIds(), ...watchIds()])];
 
 // ---------------- Ціни ----------------
 
@@ -250,7 +253,7 @@ async function refreshPrices(force = false) {
     if (force || !S.market || Date.now() - S.market.ts > 150_000) {
       try { S.market = await P.fetchMarket(); } catch (e) { errors.push(e); }
     }
-    const missing = heldIds().filter((id) => !S.market?.byId?.[id]
+    const missing = trackedIds().filter((id) => !S.market?.byId?.[id]
       && (force || Date.now() - (S.state.prices[id]?.ts || 0) > 150_000));
     if (missing.length) {
       try {
@@ -471,6 +474,8 @@ function enterApp() {
   S.state.prices ??= {};
   S.state.coins ??= {};
   S.state.deleted ??= {};
+  S.state.watch ??= {};
+  S.state.watchDel ??= {};
   P.setApiKey(S.state.cgKey);
   if (S.pendingSync) {
     S.state.sync = { ...S.pendingSync, since: Date.now() };
@@ -529,7 +534,137 @@ function renderView() {
   const view = $('#view');
   if (!view || !S.state) return;
   const m = location.hash.match(/^#\/coin\/(.+)$/);
-  view.innerHTML = m ? coinView(decodeURIComponent(m[1])) : dashboardView();
+  if (m) { const fab = $('.fab'); if (fab) fab.dataset.act = 'add-tx'; view.innerHTML = coinView(decodeURIComponent(m[1])); return; }
+  const watch = location.hash === '#/watch';
+  view.innerHTML = tabsHtml(watch) + (watch ? watchView() : dashboardView());
+  const fab = $('.fab');
+  if (fab) { fab.dataset.act = watch ? 'watch-add' : 'add-tx'; fab.setAttribute('aria-label', watch ? 'Додати до Watchlist' : 'Додати транзакцію'); }
+}
+
+function tabsHtml(watch) {
+  const n = watchIds().length;
+  return `<nav class="tabs" aria-label="Розділи">
+    <a href="#/" class="${watch ? '' : 'on'}">Портфель</a>
+    <a href="#/watch" class="${watch ? 'on' : ''}">${icon('star', 16)} Watchlist${n ? ` <span class="count">${n}</span>` : ''}</a>
+  </nav>`;
+}
+
+// ---------------- Watchlist ----------------
+
+function watchView() {
+  const ids = watchIds();
+  if (!ids.length) {
+    return `<section class="empty">
+      <div class="empty-star">${icon('star', 44)}</div>
+      <h1>Watchlist порожній</h1>
+      <p class="muted">Додайте монети, за якими хочете стежити, але поки не купували. Тут буде їхня ціна, зміна за 24 години й графік за тиждень.</p>
+      <button class="btn primary lg" data-act="watch-add">${icon('plus', 18)} Додати монету</button>
+      <div class="empty-foot">${pricesLine()}</div>
+    </section>`;
+  }
+  const rows = ids.map((id) => {
+    const c = meta(id), q = quote(id);
+    const held = S.state.txs.some((t) => t.coinId === id);
+    const spark = q?.spark ? sparkline(q.spark, { w: 160, h: 44, color: (q.chg7 ?? 0) >= 0 ? UP : DOWN }) : '';
+    return `<div class="watch-item">
+      <a class="watch-row" href="#/coin/${encodeURIComponent(id)}">
+        ${logo(id, 'lg', c)}
+        <div class="wr-name"><b>${esc(c.name)}</b><span class="muted">${esc(c.symbol)}${q?.rank ? ' · #' + q.rank : ''}${held ? ' · у портфелі' : ''}</span></div>
+        <div class="wr-spark">${spark}${q?.chg7 != null ? `<span class="wr-7d ${tone(q.chg7)}">${pct(q.chg7)} · 7д</span>` : ''}</div>
+        <div class="wr-price"><b>${usd(q?.price)}</b>${q?.chg24 != null ? `<span class="chip ${tone(q.chg24)}">${pct(q.chg24)}</span>` : ''}</div>
+      </a>
+      <button class="icon-btn sm star on" data-act="watch-toggle" data-id="${esc(id)}" title="Прибрати з Watchlist" aria-label="Прибрати з Watchlist">${icon('star', 18)}</button>
+    </div>`;
+  }).join('');
+  return `
+    <div class="section-head"><h2>Watchlist</h2>${pricesLine()}</div>
+    <div class="watch-list card">${rows}</div>
+    <button class="btn watch-add-btn" data-act="watch-add">${icon('plus', 18)} Додати монету</button>`;
+}
+
+function toggleWatch(id, metaHint) {
+  if (isWatched(id)) {
+    delete S.state.watch[id];
+    S.state.watchDel[id] = Date.now();
+    toast('Прибрано з Watchlist');
+    const onItsPage = location.hash === `#/coin/${encodeURIComponent(id)}`;
+    if (onItsPage && !S.state.txs.some((t) => t.coinId === id)) location.hash = '#/watch';
+  } else {
+    S.state.watch[id] = Date.now();
+    if (metaHint && !S.state.coins[id]) S.state.coins[id] = metaHint;
+    toast('Додано до Watchlist');
+  }
+  save();
+  renderView();
+  if (isWatched(id) && !S.market?.byId?.[id]) refreshPrices();
+}
+
+function openWatchPicker() {
+  const remote = {};
+  openModal('Додати до Watchlist', `
+    <label class="field search-field"><span>Монета</span>
+      <div class="search-in">${icon('search', 18)}<input id="wq" placeholder="Bitcoin, XMR, AAPLX, золото…" autocomplete="off" spellcheck="false"></div>
+    </label>
+    <div class="pick-list tall" id="wlist"></div>`);
+  const qi = $('#wq');
+  let timer;
+  const item = (c) => {
+    const m = { id: c.id, name: c.name, symbol: String(c.symbol).toUpperCase(), image: P.safeImg(c.image || '') };
+    const qp = quote(c.id)?.price ?? c.price;
+    const on = isWatched(c.id);
+    return `<button type="button" class="pick-item ${on ? 'on' : ''}" data-wpick="${esc(c.id)}">
+      ${logo(c.id, 'md', m)}<span class="pi-name"><b>${esc(m.name)}</b><span class="muted">${esc(m.symbol)}${c.rank ? ' · #' + c.rank : ''}</span></span>
+      <span class="pi-price">${qp != null ? usd(qp) : ''}</span><span class="pi-star">${icon('star', 18)}</span></button>`;
+  };
+  const lists = () => {
+    const top = S.market?.list || [];
+    const ids = new Set(top.map((c) => c.id));
+    return [...top, ...(S.rwa?.list || []).filter((c) => !ids.has(c.id)), ...Object.values(remote).filter((c) => !ids.has(c.id))];
+  };
+  function render() {
+    const q = qi.value.trim().toLowerCase();
+    let items;
+    if (!q) items = lists().slice(0, 15);
+    else {
+      const score = (c) => {
+        const sy = String(c.symbol).toLowerCase(), n = c.name.toLowerCase();
+        return sy === q ? 0 : n === q ? 1 : sy.startsWith(q) ? 2 : n.startsWith(q) ? 3 : (n.includes(q) || sy.includes(q)) ? 4 : 9;
+      };
+      items = lists().map((c) => [score(c), c]).filter(([x]) => x < 9)
+        .sort((a, b) => a[0] - b[0] || (a[1].rank ?? 1e9) - (b[1].rank ?? 1e9)).slice(0, 15).map(([, c]) => c);
+    }
+    $('#wlist').innerHTML = items.map(item).join('')
+      + (q ? `<button type="button" class="pick-remote" data-wremote="${esc(qi.value.trim())}">${icon('search', 16)} Шукати «${esc(qi.value.trim())}» у всій базі CoinGecko</button>` : '');
+    clearTimeout(timer);
+    if (q.length >= 2 && !items.length) timer = setTimeout(() => { const b = $('[data-wremote]'); if (b) searchRemote(b); }, 700);
+  }
+  async function searchRemote(b) {
+    b.disabled = true;
+    b.innerHTML = '<span class="spinner sm"></span> Шукаємо…';
+    try {
+      const res = await P.search(b.dataset.wremote);
+      res.forEach((c) => (remote[c.id] = c));
+      render();
+      if (!res.length) $('#wlist').insertAdjacentHTML('afterbegin', '<div class="muted pad">Нічого не знайдено</div>');
+    } catch (e) {
+      b.disabled = false;
+      b.textContent = e.code === 429 ? `CoinGecko обмежив запити — спробуйте через ${P.blockedFor() || 60} с` : 'Помилка пошуку — спробуйте ще раз';
+    }
+  }
+  qi.addEventListener('input', render);
+  $('#wlist').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.wremote) return searchRemote(b);
+    const id = b.dataset.wpick;
+    if (!id) return;
+    const c = lists().find((x) => x.id === id) || {};
+    toggleWatch(id, { id, name: c.name, symbol: String(c.symbol || '').toUpperCase(), image: P.safeImg(c.image || '') });
+    render();
+  });
+  if (!S.rwa) P.loadRwa().then((m) => { S.rwa = m; if ($('#wq')) render(); }).catch(() => {});
+  render();
+  setTimeout(() => qi.focus(), 50);
 }
 
 function pricesLine() {
@@ -638,7 +773,8 @@ function coinCard(h) {
 
 function coinView(id) {
   const txs = S.state.txs.filter((t) => t.coinId === id);
-  if (!txs.length) { setTimeout(() => (location.hash = '#/'), 0); return ''; }
+  if (!txs.length && !isWatched(id)) { setTimeout(() => (location.hash = '#/'), 0); return ''; }
+  if (!txs.length) return watchCoinView(id);
   const c = meta(id);
   const k = computeCoin(txs);
   const q = quote(id);
@@ -672,17 +808,7 @@ function coinView(id) {
 
   return `
     <a class="back" href="#/">${icon('back', 18)} Портфель</a>
-    <section class="coin-hero card">
-      <div class="ch-head">
-        ${logo(id, 'xxl', c)}
-        <div class="ch-title">
-          <h1>${esc(c.name)} <span class="sym">${esc(c.symbol)}</span></h1>
-          <div class="ch-price"><span>${usd(price)}</span>${q?.chg24 != null ? `<span class="chip ${tone(q.chg24)}">${pct(q.chg24)} · 24г</span>` : ''}${mk?.rank ? `<span class="chip flat">#${mk.rank}</span>` : ''}</div>
-        </div>
-        <button class="btn primary" data-act="add-tx" data-coin="${esc(id)}">${icon('plus', 18)} <span class="desk-only-inline">Транзакція</span></button>
-      </div>
-      ${mk?.spark ? `<div class="ch-spark">${sparkline(mk.spark, { h: 120, color: (mk.chg7 ?? 0) >= 0 ? UP : DOWN })}<span class="spark-tag">7 днів · ${pct(mk.chg7)}</span></div>` : ''}
-    </section>
+    ${coinHero(id, c, q)}
     ${k.oversold ? `<div class="warn-box">${icon('alert', 18)} Продано або переказано більше монет, ніж було куплено на ту дату. Перевірте дати й кількість у транзакціях.</div>` : ''}
     <div class="tiles">
       ${tile('Кількість', `${fq(k.qty)} ${esc(c.symbol)}`)}
@@ -698,6 +824,31 @@ function coinView(id) {
       <div class="section-head in"><h2>Транзакції</h2><span class="muted small">${txs.length}</span></div>
       <div class="tx-list">${rows}</div>
     </section>`;
+}
+
+function coinHero(id, c, q) {
+  const on = isWatched(id);
+  return `<section class="coin-hero card">
+      <div class="ch-head">
+        ${logo(id, 'xxl', c)}
+        <div class="ch-title">
+          <h1>${esc(c.name)} <span class="sym">${esc(c.symbol)}</span></h1>
+          <div class="ch-price"><span>${usd(q?.price)}</span>${q?.chg24 != null ? `<span class="chip ${tone(q.chg24)}">${pct(q.chg24)} · 24г</span>` : ''}${q?.rank ? `<span class="chip flat">#${q.rank}</span>` : ''}</div>
+        </div>
+        <div class="ch-actions">
+          <button class="icon-btn star ${on ? 'on' : ''}" data-act="watch-toggle" data-id="${esc(id)}" title="${on ? 'Прибрати з Watchlist' : 'Додати до Watchlist'}" aria-label="${on ? 'Прибрати з Watchlist' : 'Додати до Watchlist'}">${icon('star', 20)}</button>
+          <button class="btn primary" data-act="add-tx" data-coin="${esc(id)}">${icon('plus', 18)} <span class="desk-only-inline">Транзакція</span></button>
+        </div>
+      </div>
+      ${q?.spark ? `<div class="ch-spark">${sparkline(q.spark, { h: 120, color: (q.chg7 ?? 0) >= 0 ? UP : DOWN })}<span class="spark-tag">7 днів · ${pct(q.chg7)}</span></div>` : ''}
+    </section>`;
+}
+
+function watchCoinView(id) {
+  return `
+    <a class="back" href="#/watch">${icon('back', 18)} Watchlist</a>
+    ${coinHero(id, meta(id), quote(id))}
+    <div class="note-box muted">${icon('star', 16)} Цієї монети немає у вашому портфелі. Натисніть «Транзакція», коли купите її.</div>`;
 }
 
 // ---------------- Модальні вікна ----------------
@@ -1248,6 +1399,8 @@ document.addEventListener('click', (e) => {
   const act = el.dataset.act;
   const handlers = {
     'add-tx': () => openTxModal({ coinId: el.dataset.coin || null }),
+    'watch-add': openWatchPicker,
+    'watch-toggle': () => toggleWatch(el.dataset.id, meta(el.dataset.id)),
     'edit-tx': () => openTxModal({ txId: el.dataset.id }),
     'del-tx': () => deleteTx(el.dataset.id),
     'close-modal': closeModal,

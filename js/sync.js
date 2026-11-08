@@ -108,14 +108,29 @@ export function mergeStates(local, remote) {
     settings: local.settings || remote.settings, // налаштування — свої на кожному пристрої
     sync: local.sync || remote.sync,
     cgKey: 'cgKey' in local ? local.cgKey : remote.cgKey,
+    ...mergeWatch(local, remote),
   };
+}
+
+// Watchlist: { id: коли додано }, видалення — { id: коли видалено }; новіша дія перемагає
+function mergeWatch(local, remote) {
+  const watchDel = { ...(remote.watchDel || {}) };
+  for (const [id, ts] of Object.entries(local.watchDel || {})) watchDel[id] = Math.max(watchDel[id] || 0, ts);
+  const watch = {};
+  for (const src of [remote.watch || {}, local.watch || {}]) {
+    for (const [id, ts] of Object.entries(src)) watch[id] = Math.max(watch[id] || 0, ts);
+  }
+  for (const id of Object.keys(watch)) if ((watchDel[id] || 0) >= watch[id]) delete watch[id];
+  return { watch, watchDel };
 }
 
 function digest(s) {
   const txs = [...(s.txs || [])].sort((a, b) => (a.id < b.id ? -1 : 1));
   const del = Object.keys(s.deleted || {}).sort().map((k) => [k, s.deleted[k]]);
   const coins = Object.keys(s.coins || {}).sort();
-  return JSON.stringify([txs, del, coins]);
+  const watch = Object.keys(s.watch || {}).sort().map((k) => [k, s.watch[k]]);
+  const wdel = Object.keys(s.watchDel || {}).sort().map((k) => [k, s.watchDel[k]]);
+  return JSON.stringify([txs, del, coins, watch, wdel]);
 }
 
 export const sameContent = (a, b) => digest(a) === digest(b);
