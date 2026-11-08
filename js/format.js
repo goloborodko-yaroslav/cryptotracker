@@ -45,3 +45,12 @@ export function toLocalInput(ms) {
   const d = new Date(ms);
   return new Date(ms - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
+
+// Капіталізація коротко: $1.52T, $85.3B, $412M
+export function usdShort(v) {
+  if (v == null || !isFinite(v) || v <= 0) return '—';
+  const u = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'K']].find(([d]) => v >= d);
+  if (!u) return usd(v);
+  const x = v / u[0];
+  return '$' + x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2) + u[1];
+}

@@ -4,11 +4,12 @@ import { computePortfolio, computeCoin, sortTxs, TX_TYPES } from './calc.js';
 import * as P from './prices.js';
 import * as Sync from './sync.js';
 import * as Mono from './mono.js';
-import { esc, usd, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from './format.js';
+import * as Bio from './bio.js';
+import { esc, usd, usdShort, pct, qty as fq, dt, time, tone, parseNum, toLocalInput } from './format.js';
 import { sparkline, donut, PALETTE, OTHER, UP, DOWN } from './charts.js';
 import { icon, LOGO } from './icons.js';
 
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.8.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $('#app');
@@ -198,15 +199,20 @@ function checkNewPassword(pw, pw2) {
 
 // ---------------- Монети ----------------
 
+const capRwaItem = (id) => S.capRwa?.list?.find((c) => c.id === id) || null;
+const rwaDirItem = (id) => S.rwa?.list?.find((c) => c.id === id) || null;
+
 function quote(id) {
   const m = S.market?.byId?.[id];
   if (m && m.price != null) return m;
-  return S.state?.prices?.[id] || null;
+  const p = S.state?.prices?.[id], r = capRwaItem(id);
+  if (p && r) return (p.ts || 0) >= S.capRwa.ts ? p : r;
+  return p || r || null;
 }
 
 function meta(id) {
   const saved = S.state?.coins?.[id] || {};
-  const m = S.market?.byId?.[id] || {};
+  const m = S.market?.byId?.[id] || capRwaItem(id) || rwaDirItem(id) || {};
   return {
     id,
     name: saved.name || m.name || id,
@@ -420,14 +426,17 @@ function renderRecoveryKey(rk, next, inModal = false) {
 }
 
 function renderUnlock() {
+  const bio = S.bio;
   app.innerHTML = authShell(`
     <h1>З поверненням</h1>
-    <p class="muted">Введіть головний пароль, щоб розшифрувати портфель.</p>
+    <p class="muted">${bio ? `Увійдіть із ${esc(Bio.name())} або введіть головний пароль.` : 'Введіть головний пароль, щоб розшифрувати портфель.'}</p>
+    ${bio ? `<button class="btn primary block lg bio-btn" id="bio-unlock">${icon('faceid', 20)} Увійти з ${esc(Bio.name())}</button>
+    <div class="or-sep"><span>або паролем</span></div>` : ''}
     <form id="unlock-form" novalidate>
       ${USERNAME_FIELD}
-      <label class="field"><span>Пароль</span><input type="password" name="pw" autocomplete="current-password" required autofocus></label>
+      <label class="field"><span>Пароль</span><input type="password" name="pw" autocomplete="current-password" required ${bio ? '' : 'autofocus'}></label>
       <div class="form-err" hidden></div>
-      <button class="btn primary block lg" type="submit">${icon('lock', 18)} Розблокувати</button>
+      <button class="btn ${bio ? '' : 'primary'} block lg" type="submit">${icon('lock', 18)} Розблокувати</button>
     </form>
     <button class="link-btn" id="forgot">Забули пароль? Увійти ключем відновлення</button>`);
   const form = $('#unlock-form');
@@ -449,6 +458,36 @@ function renderUnlock() {
     }
   });
   $('#forgot').addEventListener('click', renderRecover);
+  if (bio) {
+    const btn = $('#bio-unlock');
+    btn.addEventListener('click', () => bioUnlock(btn, form));
+    // Під час відкриття застосунку одразу показуємо Face ID (але не після ручного блокування)
+    const noAuto = sessionStorage.getItem('ct-no-auto-bio');
+    sessionStorage.removeItem('ct-no-auto-bio');
+    if (!noAuto && document.visibilityState === 'visible') bioUnlock(btn, form, true);
+  }
+}
+
+async function bioUnlock(btn, form, auto = false) {
+  if (btn.disabled) return;
+  busy(btn, true, 'Перевіряємо…');
+  try {
+    const prf = await Bio.evaluate(S.bio);
+    try {
+      const { dek, state } = await V.unlockWithBio(S.vault, S.bio.box, prf);
+      S.dek = dek; S.state = state;
+    } finally { prf.fill(0); }
+    enterApp();
+  } catch (e) {
+    busy(btn, false);
+    if (e.message === 'BIO_STALE') {
+      await db.del('bio'); S.bio = null;
+      renderUnlock();
+      showErr($('#unlock-form'), `Портфель змінено (відновлено з іншого сховища). Увійдіть паролем і знову увімкніть вхід із ${Bio.name()} у налаштуваннях.`);
+    } else if (!auto && e.code !== 'CANCELLED') {
+      showErr(form, `Не вдалося увійти з ${Bio.name()}. Введіть пароль.`);
+    }
+  }
 }
 
 function renderRecover() {
@@ -491,6 +530,7 @@ function renderRecover() {
 function lock() {
   // Перезавантаження сторінки гарантовано стирає ключ і дані з пам'яті.
   S.dek = null; S.state = null;
+  try { sessionStorage.setItem('ct-no-auto-bio', '1'); } catch { /* приватний режим */ }
   app.innerHTML = '';
   location.reload();
 }
@@ -505,6 +545,7 @@ function enterApp() {
   S.state.watch ??= {};
   S.state.watchDel ??= {};
   P.setApiKey(S.state.cgKey);
+  if (!S.capRwa) P.loadCachedCapRwa().then((c) => { if (c?.list && !S.capRwa) S.capRwa = c; }).catch(() => {});
   Mono.setEnabled(!S.state.settings.colorLogos);
   if (S.pendingSync) {
     S.state.sync = { ...S.pendingSync, since: Date.now() };
@@ -564,18 +605,92 @@ function renderView() {
   if (!view || !S.state) return;
   const m = location.hash.match(/^#\/coin\/(.+)$/);
   if (m) { const fab = $('.fab'); if (fab) fab.dataset.act = 'add-tx'; view.innerHTML = coinView(decodeURIComponent(m[1])); return; }
-  const watch = location.hash === '#/watch';
-  view.innerHTML = tabsHtml(watch) + (watch ? watchView() : dashboardView());
+  const h = location.hash;
+  const tab = h === '#/watch' ? 'watch' : h.startsWith('#/cap') ? 'cap' : 'portfolio';
+  const watch = tab === 'watch';
+  view.innerHTML = tabsHtml(tab) + (watch ? watchView() : tab === 'cap' ? capView(h === '#/cap/rwa' ? 'rwa' : 'crypto') : dashboardView());
   const fab = $('.fab');
   if (fab) { fab.dataset.act = watch ? 'watch-add' : 'add-tx'; fab.setAttribute('aria-label', watch ? 'Додати до Watchlist' : 'Додати транзакцію'); }
 }
 
-function tabsHtml(watch) {
+function tabsHtml(tab) {
   const n = watchIds().length;
   return `<nav class="tabs" aria-label="Розділи">
-    <a href="#/" class="${watch ? '' : 'on'}">Портфель</a>
-    <a href="#/watch" class="${watch ? 'on' : ''}">${icon('star', 16)} Watchlist${n ? ` <span class="count">${n}</span>` : ''}</a>
+    <a href="#/" class="${tab === 'portfolio' ? 'on' : ''}">Портфель</a>
+    <a href="#/watch" class="${tab === 'watch' ? 'on' : ''}">${icon('star', 16)} Watchlist${n ? ` <span class="count">${n}</span>` : ''}</a>
+    <a href="#/cap" class="${tab === 'cap' ? 'on' : ''}">${icon('bars', 16)} Cap</a>
   </nav>`;
+}
+
+// ---------------- Cap: топ монет за капіталізацією ----------------
+
+const capKnown = (id) => !!(S.market?.byId?.[id]?.rank <= 100 || capRwaItem(id));
+
+function ensureCapRwa() {
+  if (S.capRwaBusy) return;
+  if (S.capRwa && Date.now() - S.capRwa.ts < 300_000) return;
+  S.capRwaBusy = true;
+  (async () => {
+    try {
+      if (!S.capRwa) {
+        const c = await P.loadCachedCapRwa();
+        if (c?.list) { S.capRwa = c; if (location.hash === '#/cap/rwa') renderView(); }
+        if (S.capRwa && Date.now() - S.capRwa.ts < 300_000) return;
+      }
+      S.capRwa = await P.fetchCapRwa(20);
+      S.capRwaError = null;
+    } catch (e) {
+      S.capRwaError = e.code === 429 ? `CoinGecko обмежив запити — спробуйте через ${P.blockedFor() || 60} с` : 'Не вдалося завантажити список RWA';
+    } finally {
+      S.capRwaBusy = false;
+      if (location.hash === '#/cap/rwa') renderView();
+    }
+  })();
+}
+
+function capView(seg) {
+  const rwa = seg === 'rwa';
+  if (rwa) ensureCapRwa();
+  const list = rwa ? (S.capRwa?.list || [])
+    : (S.market?.list || []).filter((c) => c.rank).sort((a, b) => a.rank - b.rank).slice(0, 100);
+  const KIND = { gold: 'Золото', stock: 'Акція' };
+  const rows = list.map((c, i) => {
+    const id = c.id;
+    const m = meta(id);
+    const on = isWatched(id), held = S.state.txs.some((t) => t.coinId === id);
+    const spark = c.spark ? sparkline(c.spark, { w: 120, h: 36, color: (c.chg7 ?? 0) >= 0 ? UP : DOWN }) : '';
+    const sub = [m.symbol, rwa ? KIND[c.kind] : null, held ? 'у портфелі' : null].filter(Boolean).join(' · ');
+    return `<div class="cap-item">
+      <a class="cap-row" href="#/coin/${encodeURIComponent(id)}">
+        <span class="cap-n">${rwa ? i + 1 : c.rank}</span>
+        ${logo(id, 'md', m)}
+        <div class="wr-name"><b>${esc(m.name)}</b><span class="muted">${esc(sub)}</span><span class="muted cap-mcap-mob">${usdShort(c.mcap)}</span></div>
+        <div class="cap-spark">${spark}</div>
+        <div class="cap-7d ${tone(c.chg7)}">${pct(c.chg7)}</div>
+        <div class="wr-price"><b>${usd(c.price)}</b>${c.chg24 != null ? `<span class="chip ${tone(c.chg24)}">${pct(c.chg24)}</span>` : ''}</div>
+        <div class="cap-mcap">${usdShort(c.mcap)}</div>
+      </a>
+      <button class="icon-btn sm star ${on ? 'on' : ''}" data-act="watch-toggle" data-id="${esc(id)}" title="${on ? 'Прибрати з Watchlist' : 'Додати до Watchlist'}" aria-label="${on ? 'Прибрати з Watchlist' : 'Додати до Watchlist'}">${icon('star', 18)}</button>
+    </div>`;
+  }).join('');
+  let status;
+  if (rwa) {
+    status = S.capRwaError ? `<span class="status warn">${icon('alert', 14)} ${esc(S.capRwaError)}</span>`
+      : S.capRwa ? `<span class="status"><i class="dot"></i> CoinGecko · ${time(S.capRwa.ts)}</span>`
+      : `<span class="status"><span class="spinner sm"></span> Завантажуємо…</span>`;
+    status = `<span class="status-line">${status}</span>`;
+  } else status = pricesLine();
+  return `
+    <div class="cap-seg" role="tablist">
+      <a href="#/cap" class="${rwa ? '' : 'on'}">Криптовалюти · Топ 100</a>
+      <a href="#/cap/rwa" class="${rwa ? 'on' : ''}">RWA · Топ 20</a>
+    </div>
+    <div class="section-head"><h2>${rwa ? 'Золото й акції' : 'За капіталізацією'}</h2>${status}</div>
+    ${list.length ? `<div class="cap-list card">
+      <div class="cap-head"><span>#</span><span></span><span>Назва</span><span>7 днів</span><span></span><span>Ціна · 24г</span><span>Капіталізація</span></div>
+      ${rows}</div>
+      ${rwa ? '<p class="muted small cap-note">Токенізоване золото й акції з категорій CoinGecko, разом за капіталізацією. Ціни токенів можуть трохи відрізнятися від біржових.</p>' : ''}`
+    : `<div class="card pad muted">${rwa && !S.capRwaError ? '<span class="spinner sm"></span> Завантажуємо список…' : 'Список поки недоступний'}</div>`}`;
 }
 
 // ---------------- Watchlist ----------------
@@ -617,7 +732,7 @@ function toggleWatch(id, metaHint) {
     S.state.watchDel[id] = Date.now();
     toast('Прибрано з Watchlist');
     const onItsPage = location.hash === `#/coin/${encodeURIComponent(id)}`;
-    if (onItsPage && !S.state.txs.some((t) => t.coinId === id)) location.hash = '#/watch';
+    if (onItsPage && !S.state.txs.some((t) => t.coinId === id) && !capKnown(id)) location.hash = '#/watch';
   } else {
     S.state.watch[id] = Date.now();
     if (metaHint && !S.state.coins[id]) S.state.coins[id] = metaHint;
@@ -802,7 +917,7 @@ function coinCard(h) {
 
 function coinView(id) {
   const txs = S.state.txs.filter((t) => t.coinId === id);
-  if (!txs.length && !isWatched(id)) { setTimeout(() => (location.hash = '#/'), 0); return ''; }
+  if (!txs.length && !isWatched(id) && !capKnown(id)) { setTimeout(() => (location.hash = '#/'), 0); return ''; }
   if (!txs.length) return watchCoinView(id);
   const c = meta(id);
   const k = computeCoin(txs);
@@ -874,10 +989,14 @@ function coinHero(id, c, q) {
 }
 
 function watchCoinView(id) {
+  const w = isWatched(id);
+  const back = w ? ['#/watch', 'Watchlist'] : [capRwaItem(id) ? '#/cap/rwa' : '#/cap', 'Cap'];
+  const q = quote(id);
   return `
-    <a class="back" href="#/watch">${icon('back', 18)} Watchlist</a>
-    ${coinHero(id, meta(id), quote(id))}
-    <div class="note-box muted">${icon('star', 16)} Цієї монети немає у вашому портфелі. Натисніть «Транзакція», коли купите її.</div>`;
+    <a class="back" href="${back[0]}">${icon('back', 18)} ${back[1]}</a>
+    ${coinHero(id, meta(id), q)}
+    ${q?.mcap ? `<div class="tiles"><div class="tile card"><span class="label">Капіталізація</span><span>${usdShort(q.mcap)}</span></div></div>` : ''}
+    <div class="note-box muted">${icon('star', 16)} Цієї монети немає у вашому портфелі. ${w ? 'Натисніть «Транзакція», коли купите її.' : 'Додайте її до Watchlist зірочкою або натисніть «Транзакція», коли купите.'}</div>`;
 }
 
 // ---------------- Модальні вікна ----------------
@@ -1157,6 +1276,76 @@ function deleteTx(id) {
 
 // ---------------- Налаштування ----------------
 
+async function renderBioRow() {
+  const row = $('#bio-row');
+  if (!row) return;
+  const ok = await Bio.available();
+  if (!ok && !S.bio) return;
+  const nm = Bio.name();
+  row.innerHTML = S.bio
+    ? `<div class="set-row"><span>${icon('faceid', 18)} Вхід із ${esc(nm)}<small class="muted block-sub">Увімкнено на цьому пристрої</small></span><button class="btn sm" data-act="bio-off">Вимкнути</button></div>`
+    : `<div class="set-row"><span>${icon('faceid', 18)} Вхід із ${esc(nm)}<small class="muted block-sub">Без введення пароля на цьому пристрої</small></span><button class="btn sm primary" data-act="bio-on">Увімкнути</button></div>`;
+}
+
+function openBioEnable() {
+  const nm = Bio.name();
+  openModal(`Вхід із ${nm}`, `
+    <p class="muted">Підтвердіть головний пароль. Потім пристрій попросить зберегти ключ доступу «CryptoTracker» і підтвердити вхід.</p>
+    <p class="muted small">Ключ доступу зберігається в «Паролях» Apple. Ваш пароль ніде не записується: ключ доступу відкриває окремий ключ, яким зашифрована копія ключа даних лише на цьому пристрої. Потрібна iOS 18 або новіша.</p>
+    <form id="bio-form" novalidate>
+      ${USERNAME_FIELD}
+      <label class="field"><span>Головний пароль</span><input type="password" name="pw" autocomplete="current-password" required autofocus></label>
+      <div class="form-err" hidden></div>
+      <button class="btn primary block lg" type="submit">${icon('faceid', 18)} Продовжити</button>
+    </form>`);
+  const form = $('#bio-form');
+  let reg = null, wrapper = null;
+  const finish = async (prf) => {
+    try {
+      const box = await wrapper.wrap(prf);
+      S.bio = { credId: reg.credId, prfSalt: reg.prfSalt, box, at: Date.now() };
+      await db.set('bio', S.bio);
+      closeModal();
+      toast(`Вхід із ${nm} увімкнено`);
+      renderBioRow();
+    } finally { prf.fill(0); }
+  };
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('button[type=submit]', form);
+    try {
+      if (!reg) {
+        const pw = form.elements.pw.value;
+        if (!pw) return showErr(form, 'Введіть пароль');
+        busy(btn, true, 'Перевіряємо пароль…');
+        await waitArgon();
+        wrapper?.discard();
+        wrapper = await V.bioWrapper(S.vault, pw);
+        busy(btn, true, 'Чекаємо підтвердження…');
+        reg = await Bio.register();
+        if (reg.prf) return await finish(reg.prf);
+        // Деякі системи віддають секрет лише під час входу — потрібне ще одне підтвердження
+        busy(btn, false);
+        form.elements.pw.closest('.field').hidden = true;
+        btn.innerHTML = `${icon('faceid', 18)} Підтвердити`;
+        showErr(form, '');
+        $('.muted', modalRoot).textContent = 'Ключ доступу створено. Натисніть «Підтвердити» ще раз, щоб завершити.';
+        return;
+      }
+      busy(btn, true, 'Чекаємо підтвердження…');
+      await finish(await Bio.evaluate(reg));
+    } catch (e2) {
+      busy(btn, false);
+      const msg = {
+        WRONG_PASSWORD: 'Невірний пароль',
+        CANCELLED: 'Скасовано. Спробуйте ще раз',
+        NO_PRF: `Цей пристрій не підтримує вхід із ${nm} для вебзастосунків. Потрібна iOS 18 або новіша.`,
+      }[e2.code || e2.message] || 'Не вдалося: ' + (e2.code || e2.message);
+      showErr(form, msg);
+    }
+  });
+}
+
 function openSettings() {
   const s = S.state.settings;
   const canShare = !!(navigator.canShare && navigator.canShare({ files: [new File(['x'], 'x.json', { type: 'application/json' })] }));
@@ -1168,6 +1357,7 @@ function openSettings() {
           ${[[1, '1 хв'], [5, '5 хв'], [15, '15 хв'], [30, '30 хв'], [60, '1 год'], [0, 'Ніколи']].map(([v, l]) => `<option value="${v}" ${s.autoLockMin === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
       </label>
+      <div id="bio-row"></div>
       <button class="set-row btn-row" data-act="change-pw"><span>Змінити головний пароль</span>${icon('chevron', 18)}</button>
       <button class="set-row btn-row" data-act="new-rk"><span>Створити новий ключ відновлення</span>${icon('chevron', 18)}</button>
     </div>
@@ -1214,6 +1404,7 @@ function openSettings() {
     toast('Збережено');
   });
   $('#import-file').addEventListener('change', (e) => importBackup(e.target.files[0]));
+  renderBioRow();
   bindSyncGroup();
   bindCgGroup();
 }
@@ -1451,6 +1642,13 @@ document.addEventListener('click', (e) => {
     'close-modal': closeModal,
     'refresh': () => refreshPrices(true),
     'lock': lock,
+    'bio-on': openBioEnable,
+    'bio-off': async () => {
+      if (!confirm(`Вимкнути вхід із ${Bio.name()} на цьому пристрої? Ключ доступу «CryptoTracker» можна також видалити в «Паролях».`)) return;
+      await db.del('bio'); S.bio = null;
+      toast('Вимкнено');
+      renderBioRow();
+    },
     'settings': openSettings,
     'toggle-hide': () => {
       S.state.settings.hideValues = !S.state.settings.hideValues;
@@ -1512,7 +1710,11 @@ async function boot() {
   try {
     S.market = await P.loadCachedMarket();
     const vault = await db.get('vault');
-    if (V.isVault(vault)) { S.vault = vault; renderUnlock(); }
+    if (V.isVault(vault)) {
+      S.vault = vault;
+      S.bio = (await db.get('bio')) || null;
+      renderUnlock();
+    }
     else renderSetup();
   } catch (e) {
     console.error(e);

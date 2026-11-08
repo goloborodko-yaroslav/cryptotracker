@@ -446,3 +446,43 @@ a.legend-row:hover { background: var(--surface-2); }
 
 /* Чорно-білі логотипи: поки перемальовується (або якщо не вдалося) — сірий оригінал */
 .logo.mono-gs { filter: grayscale(1) contrast(1.1); }
+
+/* Face ID */
+.bio-btn { margin-top: 6px; }
+.or-sep { display: flex; align-items: center; gap: 12px; margin: 18px 0 6px; color: var(--muted); font-size: 13px; }
+.or-sep::before, .or-sep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.block-sub { display: block; font-size: 12.5px; margin-top: 2px; }
+#bio-row .set-row > span { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; }
+#bio-row .block-sub { flex-basis: 100%; padding-left: 26px; }
+
+/* Cap */
+.cap-seg { display: flex; width: fit-content; max-width: 100%; gap: 4px; padding: 4px; margin-bottom: 14px; border-radius: 12px; background: rgba(255, 255, 255, .03); border: 1px solid var(--border); }
+.cap-seg a { padding: 7px 14px; border-radius: 9px; font-size: 13.5px; font-weight: 650; color: var(--muted); }
+.cap-seg a.on { background: rgba(255, 255, 255, .14); color: var(--text, #fff); }
+.cap-list { padding: 6px; }
+.cap-head, .cap-row { display: grid; grid-template-columns: 30px 40px minmax(0, 1fr) 120px 70px 130px 100px; align-items: center; gap: 14px; }
+.cap-head { padding: 8px 10px 6px; margin-right: 38px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.cap-head span:nth-child(n+4) { text-align: right; }
+.cap-head span:nth-child(4) { text-align: left; }
+.cap-item { display: flex; align-items: center; gap: 4px; border-top: 1px solid var(--border); }
+.cap-row { flex: 1; min-width: 0; padding: 10px; border-radius: 14px; }
+.cap-row:hover { background: var(--surface-2); }
+.cap-n { color: var(--muted); font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.cap-spark { height: 36px; }
+.cap-7d { text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cap-7d.up { color: var(--up); } .cap-7d.down, .cap-7d.flat { color: var(--down); }
+.cap-mcap { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cap-mcap-mob { display: none; }
+.cap-note { margin: 12px 4px 0; }
+@media (max-width: 760px) {
+  .cap-head { display: none; }
+  .cap-head + .cap-item { border-top: 0; }
+  .cap-row { grid-template-columns: 24px 40px minmax(0, 1fr) auto; gap: 10px; padding: 10px 6px; }
+  .cap-spark, .cap-7d, .cap-mcap { display: none; }
+  .cap-mcap-mob { display: block; }
+  .cap-n { font-size: 12px; }
+}
+@media (max-width: 400px) {
+  .tabs a { padding: 8px 11px; font-size: 14px; gap: 5px; }
+  .cap-seg a { padding: 7px 10px; font-size: 13px; }
+}

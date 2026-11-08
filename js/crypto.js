@@ -16,6 +16,7 @@ const AAD = {
   pw: 'CryptoTracker/v1/dek/password',
   rk: 'CryptoTracker/v1/dek/recovery',
   data: 'CryptoTracker/v1/data',
+  bio: 'CryptoTracker/v1/dek/biometric',
 };
 
 export const b64 = {
@@ -175,4 +176,42 @@ export async function newRecoveryKey(vault, password) {
   const dekRaw = await dekFromPassword(vault, password);
   try { return await wrapWithRecovery(vault, dekRaw); }
   finally { dekRaw.fill(0); }
+}
+
+// ---------- Face ID / Touch ID ----------
+// Секрет PRF ключа доступу (passkey) відкривається лише після Face ID.
+// Із нього через HKDF виводимо ключ, яким зашифрована копія DEK на цьому пристрої.
+// Ця копія не синхронізується і не потрапляє в резервні файли.
+
+async function bioKek(prf, salt) {
+  const base = await crypto.subtle.importKey('raw', prf, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt, info: enc.encode('CryptoTracker biometric v1') },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+// Перевіряє пароль і готує загортання DEK, поки користувач підтверджує Face ID
+export async function bioWrapper(vault, password) {
+  const dekRaw = await dekFromPassword(vault, password);
+  return {
+    async wrap(prf) {
+      try {
+        const salt = rand(16);
+        return { salt: b64.to(salt), ...(await seal(await bioKek(prf, salt), dekRaw, AAD.bio)) };
+      } finally { dekRaw.fill(0); }
+    },
+    discard() { dekRaw.fill(0); },
+  };
+}
+
+export async function unlockWithBio(vault, box, prf) {
+  let dekRaw;
+  try { dekRaw = await open(await bioKek(prf, b64.from(box.salt)), box, AAD.bio); }
+  catch { throw new Error('BIO_STALE'); }
+  try {
+    const dek = await aesKey(dekRaw);
+    let state;
+    try { state = await openData(vault, dek); } catch { throw new Error('BIO_STALE'); } // сховище замінено іншим
+    return { dek, state };
+  } finally { dekRaw.fill(0); }
 }

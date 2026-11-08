@@ -92,6 +92,7 @@ export async function fetchMarket() {
     rank: c.market_cap_rank,
     chg24: c.price_change_percentage_24h,
     chg7: c.price_change_percentage_7d_in_currency,
+    mcap: c.market_cap,
     spark: downsample(c.sparkline_in_7d?.price, 60),
   }));
   const m = { ts: Date.now(), list: slim };
@@ -142,6 +143,30 @@ export async function loadRwa() {
   }
   const m = { ts: Date.now(), list };
   await db.set('rwa', m);
+  return m;
+}
+
+// Топ RWA для вкладки Cap: токенізоване золото й акції разом, за капіталізацією.
+// Кеш у IndexedDB; оновлюється не частіше ніж раз на 5 хвилин.
+const CAP_RWA = [['tokenized-gold', 'gold'], ['tokenized-stock', 'stock']];
+export const loadCachedCapRwa = () => db.get('cap-rwa');
+export async function fetchCapRwa(n = 20) {
+  const all = [];
+  for (const [cat, kind] of CAP_RWA) {
+    const r = await getJSON(`${API}/coins/markets?vs_currency=usd&category=${cat}&order=market_cap_desc&per_page=${n + 5}&page=1&sparkline=true&price_change_percentage=24h,7d`);
+    for (const c of r) {
+      if (!c.market_cap || all.some((x) => x.id === c.id)) continue;
+      all.push({
+        id: c.id, symbol: c.symbol, name: c.name, image: safeImg(c.image), kind,
+        price: c.current_price, rank: c.market_cap_rank, mcap: c.market_cap,
+        chg24: c.price_change_percentage_24h ?? null,
+        chg7: c.price_change_percentage_7d_in_currency ?? null,
+        spark: downsample(c.sparkline_in_7d?.price, 60),
+      });
+    }
+  }
+  const m = { ts: Date.now(), list: all.sort((a, b) => b.mcap - a.mcap).slice(0, n) };
+  await db.set('cap-rwa', m);
   return m;
 }
 
